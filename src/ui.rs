@@ -1,0 +1,1782 @@
+//! Native immediate-mode menus, scoreboard and field HUD.
+use macroquad::prelude::*;
+use serde_json::Value;
+#[path = "tactical_map.rs"]
+mod tactical_map;
+use tactical_map::TacticalMap;
+#[path = "crafting.rs"]
+mod crafting;
+use crafting::CraftMenu;
+#[path = "stash_ui.rs"]
+mod stash_ui;
+use stash_ui::Stash;
+
+const PAPER: Color = Color::new(0.93, 0.96, 0.94, 1.0);
+const GOLD: Color = Color::new(0.98, 0.72, 0.31, 1.0);
+const MUTED: Color = Color::new(0.70, 0.78, 0.76, 1.0);
+const BLUE_TEAM: Color = Color::new(0.57, 0.82, 0.85, 1.0);
+const RED_TEAM: Color = Color::new(0.93, 0.63, 0.51, 1.0);
+const INK: Color = Color::new(0.064, 0.094, 0.102, 1.0);
+const EDGE: Color = Color::new(0.75, 0.89, 0.85, 0.36);
+const PLATE: Color = Color::new(0.04, 0.082, 0.09, 0.83);
+
+#[derive(Debug, PartialEq)]
+pub enum Action {
+    None,
+    Join(String, String, u16, String),
+    Craft(String),
+    Input(Value),
+    Resume,
+    Leave,
+    Quit,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Field {
+    Nick,
+    Address,
+}
+
+pub struct Ui {
+    nickname: String,
+    choice: &'static str,
+    craft_open: bool,
+    craft: CraftMenu,
+    address: String,
+    editing: Option<Field>,
+    select_all: bool,
+    help: bool,
+    scoreboard: bool,
+    map_open: bool,
+    map: TacticalMap,
+    inventory_open: bool,
+    inventory: Stash,
+    fps_visible: bool,
+    fps_elapsed: f32,
+    fps_frames: u32,
+    fps: f32,
+    drone_zoom: bool,
+    help_page: u8,
+    error: String,
+    copied: f64,
+    menu_font_scale: f32,
+}
+
+struct Surface<'a> {
+    font: &'a Font,
+    scale: f32,
+    w: f32,
+    h: f32,
+    pointer: Vec2,
+    click: bool,
+}
+
+fn alpha(mut color: Color, a: f32) -> Color {
+    color.a = a;
+    color
+}
+fn number(v: &Value, name: &str, fallback: f64) -> f64 {
+    v.get(name).and_then(Value::as_f64).unwrap_or(fallback)
+}
+fn string<'a>(v: &'a Value, key: &str, default: &'a str) -> &'a str {
+    v.get(key).and_then(Value::as_str).unwrap_or(default)
+}
+fn flag(v: &Value, key: &str, default: bool) -> bool {
+    v.get(key).and_then(Value::as_bool).unwrap_or(default)
+}
+fn count(v: &Value, key: &str, fallback: i32) -> i32 {
+    number(v, key, fallback as f64).ceil() as i32
+}
+const MATERIALS: [(&str, &str); 5] = [
+    ("wood", "Дерево"),
+    ("metal", "Металл"),
+    ("oil", "Нефть"),
+    ("powder", "Порох"),
+    ("fuel", "Топливо"),
+];
+fn vehicle_name(kind: &str) -> &str {
+    match kind {
+        "patrol4x4" => "Патрульный 4×4",
+        "cargo6x6" => "Грузовой 6×6",
+        "mbt" => "Основной танк",
+        "apc" => "Бронетранспортёр",
+        "scout_buggy" => "Разведбагги",
+        _ => "Машина",
+    }
+}
+fn kit_name(kind: &str) -> &str {
+    match kind {
+        "mobility" => "Ходовая",
+        "utility" => "Оснащение",
+        _ => "Штатный",
+    }
+}
+fn plan_name(kind: &str) -> &str {
+    match kind {
+        "refinery" => "Нефтеперегонка",
+        "workshop" => "Мастерская",
+        _ => "Стена",
+    }
+}
+fn plan_cost(kind: &str) -> &str {
+    match kind {
+        "refinery" => "8 дерева · 6 металла",
+        "workshop" => "6 дерева · 8 металла",
+        _ => "3 дерева · 1 металл",
+    }
+}
+fn nearest<'a>(
+    list: &'a Value,
+    player: &Value,
+    range: f64,
+    allowed: impl Fn(&Value) -> bool,
+) -> Option<&'a Value> {
+    let px = number(player, "x", 0.);
+    let pz = number(player, "z", 0.);
+    list.as_array()?
+        .iter()
+        .filter(|v| allowed(v))
+        .filter_map(|v| {
+            let dx = number(v, "x", 0.) - px;
+            let dz = number(v, "z", 0.) - pz;
+            let d = dx * dx + dz * dz;
+            (d <= range * range).then_some((d, v))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, v)| v)
+}
+fn own_drone<'a>(state: &'a Value, p: &Value) -> Option<&'a Value> {
+    let id = &p["droneId"];
+    if id.is_null() {
+        return None;
+    }
+    state["drones"]
+        .as_array()?
+        .iter()
+        .find(|d| d["id"] == *id && d["owner"] == p["id"] && d["team"] == p["team"])
+}
+fn clock(seconds: f64) -> String {
+    let s = seconds.max(0.).ceil() as i32;
+    if s >= 3600 {
+        format!("{}:{:02}:{:02}", s / 3600, s / 60 % 60, s % 60)
+    } else {
+        format!("{}:{:02}", s / 60, s % 60)
+    }
+}
+
+impl<'a> Surface<'a> {
+    fn new(font: &'a Font) -> Self {
+        let scale = (screen_width() / 1140.)
+            .min(screen_height() / 680.)
+            .clamp(0.32, 3.);
+        let (mx, my) = mouse_position();
+        Self {
+            font,
+            scale,
+            w: screen_width() / scale,
+            h: screen_height() / scale,
+            pointer: vec2(mx / scale, my / scale),
+            click: is_mouse_button_pressed(MouseButton::Left),
+        }
+    }
+    fn rect(&self, x: f32, y: f32, w: f32, h: f32, c: Color) {
+        draw_rectangle(
+            x * self.scale,
+            y * self.scale,
+            w * self.scale,
+            h * self.scale,
+            c,
+        );
+    }
+    fn border(&self, x: f32, y: f32, w: f32, h: f32, c: Color) {
+        draw_rectangle_lines(
+            x * self.scale,
+            y * self.scale,
+            w * self.scale,
+            h * self.scale,
+            1.2 * self.scale,
+            c,
+        );
+    }
+    fn line(&self, x: f32, y: f32, bx: f32, by: f32, th: f32, c: Color) {
+        draw_line(
+            x * self.scale,
+            y * self.scale,
+            bx * self.scale,
+            by * self.scale,
+            th * self.scale,
+            c,
+        );
+    }
+    fn measure(&self, text: &str, size: f32) -> f32 {
+        measure_text(
+            text,
+            Some(self.font),
+            (size * self.scale).round().max(1.) as u16,
+            1.,
+        )
+        .width
+            / self.scale
+    }
+    fn text(&self, tx: &str, x: f32, baseline: f32, size: f32, c: Color) {
+        let px = (size * self.scale).round().max(1.) as u16;
+        draw_text_ex(
+            tx,
+            x * self.scale,
+            baseline * self.scale,
+            TextParams {
+                font: Some(self.font),
+                font_size: px,
+                color: c,
+                ..Default::default()
+            },
+        );
+    }
+    fn mid(&self, t: &str, x: f32, y: f32, size: f32, c: Color) {
+        self.text(t, x - self.measure(t, size) * 0.5, y, size, c);
+    }
+    fn right(&self, t: &str, x: f32, y: f32, size: f32, c: Color) {
+        self.text(t, x - self.measure(t, size), y, size, c);
+    }
+    fn over(&self, x: f32, y: f32, w: f32, h: f32) -> bool {
+        self.pointer.x >= x
+            && self.pointer.x <= x + w
+            && self.pointer.y >= y
+            && self.pointer.y <= y + h
+    }
+    fn button(&self, x: f32, y: f32, w: f32, h: f32, label: &str, primary: bool) -> bool {
+        let hover = self.over(x, y, w, h);
+        let bg = if primary {
+            if hover {
+                Color::new(1., 0.81, 0.48, 1.)
+            } else {
+                GOLD
+            }
+        } else if hover {
+            Color::new(0.20, 0.24, 0.19, 0.96)
+        } else {
+            PLATE
+        };
+        self.rect(x, y, w, h, bg);
+        if !primary {
+            self.border(x, y, w, h, if hover { GOLD } else { EDGE });
+        }
+        self.mid(
+            label,
+            x + w * 0.5,
+            y + h * 0.5 + 5.,
+            15.,
+            if primary { INK } else { PAPER },
+        );
+        hover && self.click
+    }
+    fn disabled(&self, x: f32, y: f32, w: f32, h: f32, label: &str) {
+        self.rect(x, y, w, h, alpha(INK, 0.7));
+        self.border(x, y, w, h, EDGE);
+        self.mid(label, x + w * 0.5, y + h * 0.5 + 5., 14., MUTED);
+    }
+    fn wrap(&self, text: &str, x: f32, baseline: f32, width: f32, size: f32, c: Color) {
+        let mut line = String::new();
+        let mut y = baseline;
+        for word in text.split_whitespace() {
+            let next = if line.is_empty() {
+                word.to_owned()
+            } else {
+                format!("{line} {word}")
+            };
+            if !line.is_empty() && self.measure(&next, size) > width {
+                self.text(&line, x, y, size, c);
+                y += size * 1.45;
+                line = word.to_owned();
+            } else {
+                line = next;
+            }
+        }
+        if !line.is_empty() {
+            self.text(&line, x, y, size, c);
+        }
+    }
+    fn shorten(&self, text: &str, size: f32, width: f32) -> String {
+        if self.measure(text, size) <= width {
+            return text.to_owned();
+        }
+        let mut out = String::new();
+        for c in text.chars() {
+            out.push(c);
+            if self.measure(&out, size) > width - self.measure("…", size) {
+                out.pop();
+                break;
+            }
+        }
+        out.push('…');
+        out
+    }
+    fn vignette(&self) {
+        let w = self.w * self.scale;
+        let h = self.h * self.scale;
+        let mut mesh = Mesh {
+            vertices: Vec::with_capacity(16),
+            indices: Vec::with_capacity(42),
+            texture: None,
+        };
+        // Shared edges and per-vertex alpha keep the vignette smooth at any resolution.
+        for (i, (fraction, opacity)) in [
+            (0., 0.96),
+            (0.21, 0.84),
+            (0.43, 0.43),
+            (0.68, 0.10),
+            (0.91, 0.),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            for y in [0., h] {
+                mesh.vertices.push(Vertex::new(
+                    fraction * w,
+                    y,
+                    0.,
+                    0.,
+                    0.,
+                    alpha(INK, opacity),
+                ));
+            }
+            if i > 0 {
+                let k = (i * 2) as u16;
+                mesh.indices
+                    .extend_from_slice(&[k - 2, k - 1, k, k, k - 1, k + 1]);
+            }
+        }
+        let k = mesh.vertices.len() as u16;
+        for (y, opacity) in [(h - 82. * self.scale, 0.), (h, 0.47)] {
+            for x in [0., w] {
+                mesh.vertices
+                    .push(Vertex::new(x, y, 0., 0., 0., alpha(INK, opacity)));
+            }
+        }
+        mesh.indices
+            .extend_from_slice(&[k, k + 1, k + 2, k + 2, k + 1, k + 3]);
+        draw_mesh(&mesh);
+    }
+    fn logo(&self, x: f32, y: f32) {
+        let pts = [
+            (1., 8.),
+            (18., 1.),
+            (35., 8.),
+            (35., 24.),
+            (18., 36.),
+            (1., 24.),
+            (1., 8.),
+        ];
+        for p in pts.windows(2) {
+            self.line(x + p[0].0, y + p[0].1, x + p[1].0, y + p[1].1, 1.8, GOLD);
+        }
+        for gap in [0., 6.] {
+            self.line(x + 9., y + 16. + gap, x + 18., y + 11. + gap, 2.9, GOLD);
+            self.line(x + 18., y + 11. + gap, x + 27., y + 16. + gap, 2.9, GOLD);
+        }
+        self.text("FRONTLINE  SURGE", x + 47., y + 25., 16., PAPER);
+    }
+    fn panel(&self, w: f32, h: f32, kicker: &str, title: &str) -> (f32, f32) {
+        self.rect(0., 0., self.w, self.h, alpha(INK, 0.69));
+        let x = (self.w - w) * 0.5;
+        let y = (self.h - h) * 0.5;
+        self.rect(x, y, w, h, Color::new(0.095, 0.14, 0.15, 0.98));
+        self.border(x, y, w, h, EDGE);
+        self.rect(x, y, w, 3., GOLD);
+        self.text(kicker, x + 27., y + 37., 12., GOLD);
+        self.text(title, x + 26., y + 89., 39., PAPER);
+        (x, y)
+    }
+}
+
+// A bare IPv6 address uses the default port. Brackets disambiguate an explicit port.
+fn parse_endpoint(value: &str) -> Result<(String, u16), String> {
+    let raw = value.trim();
+    if raw.is_empty() || raw.contains('/') || raw.chars().any(char::is_whitespace) {
+        return Err("Введи IP или имя сервера, например 192.168.1.10:8787.".into());
+    }
+    let (host, port) = if let Some(rest) = raw.strip_prefix('[') {
+        let (addr, suffix) = rest
+            .split_once(']')
+            .ok_or("Для IPv6 с портом используй [адрес]:порт.")?;
+        if suffix.is_empty() {
+            (addr, "8787")
+        } else {
+            (
+                addr,
+                suffix
+                    .strip_prefix(':')
+                    .ok_or("После ] укажи порт через двоеточие.")?,
+            )
+        }
+    } else if raw.matches(':').count() == 1 {
+        raw.split_once(':').unwrap()
+    } else {
+        (raw, "8787")
+    };
+    if host.is_empty() {
+        return Err("Укажи IP или имя сервера.".into());
+    }
+    Ok((host.to_string(), parse_port(port)?))
+}
+fn parse_port(value: &str) -> Result<u16, String> {
+    value
+        .trim()
+        .parse::<u16>()
+        .ok()
+        .filter(|p| *p > 0)
+        .ok_or_else(|| "Порт должен быть числом от 1 до 65535.".into())
+}
+
+impl Ui {
+    pub fn new() -> Self {
+        Self {
+            nickname: "Беркут".into(),
+            choice: "auto",
+            craft_open: false,
+            craft: CraftMenu::new(),
+            address: "127.0.0.1:8787".into(),
+            editing: None,
+            select_all: false,
+            help: false,
+            scoreboard: false,
+            map_open: false,
+            map: TacticalMap::new(),
+            inventory_open: false,
+            inventory: Stash::new(),
+            fps_visible: true,
+            fps_elapsed: 0.,
+            fps_frames: 0,
+            fps: 0.,
+            drone_zoom: false,
+            help_page: 0,
+            error: String::new(),
+            copied: -10.,
+            menu_font_scale: 0.,
+        }
+    }
+    pub fn set_scoreboard(&mut self, active: bool) {
+        self.scoreboard = active;
+    }
+    pub fn set_map(&mut self, active: bool) {
+        if active {
+            self.inventory_open = false;
+            self.craft_open = false;
+        }
+        if active && !self.map_open {
+            self.map.recenter();
+        }
+        self.map_open = active;
+    }
+    pub fn set_crafting(&mut self, active: bool) {
+        self.craft_open = active;
+        if active {
+            self.map_open = false;
+            self.inventory_open = false;
+            self.craft.browse();
+        }
+    }
+    pub fn set_fps_visible(&mut self, on: bool) {
+        self.fps_visible = on
+    }
+    pub fn fps_visible(&self) -> bool {
+        self.fps_visible
+    }
+    pub fn modal_open(&self) -> bool {
+        self.inventory_open || self.craft_open || self.map_open
+    }
+    pub fn set_inventory(&mut self, active: bool) {
+        self.inventory_open = active;
+        if active {
+            self.map_open = false;
+            self.craft_open = false;
+        }
+    }
+    pub fn inventory_open(&self) -> bool {
+        self.inventory_open
+    }
+    pub fn set_drone_zoom(&mut self, active: bool) {
+        self.drone_zoom = active
+    }
+    pub fn available_station(&self, state: &Value, p: &Value) -> Option<&'static str> {
+        crafting::available_station(state, p)
+    }
+    pub fn open_station(&mut self, kind: &str) {
+        self.set_crafting(true);
+        self.craft.open_station(kind);
+    }
+    pub fn interact_station(&mut self, state: &Value, p: &Value) -> bool {
+        if let Some(kind) = self.available_station(state, p) {
+            self.open_station(kind);
+            true
+        } else {
+            false
+        }
+    }
+    pub fn crafting_open(&self) -> bool {
+        self.craft_open
+    }
+    pub fn map_open(&self) -> bool {
+        self.map_open
+    }
+    pub fn handle_back(&mut self) -> bool {
+        if self.inventory_open {
+            self.inventory_open = false;
+            return true;
+        }
+        if self.craft_open {
+            self.craft_open = false;
+            return true;
+        }
+
+        if self.map_open {
+            self.map_open = false;
+            return true;
+        }
+
+        if self.help {
+            self.help = false;
+            return true;
+        }
+        if self.editing.take().is_some() {
+            self.select_all = false;
+            return true;
+        }
+        false
+    }
+    fn submit(&mut self) -> Action {
+        let name = self.nickname.trim();
+        let name = if name.is_empty() {
+            "Беркут"
+        } else {
+            name
+        }
+        .chars()
+        .take(18)
+        .collect::<String>();
+        let result = parse_endpoint(&self.address)
+            .map(|(h, p)| Action::Join(name, h, p, self.choice.into()));
+        match result {
+            Ok(a) => {
+                self.editing = None;
+                self.error.clear();
+                a
+            }
+            Err(e) => {
+                self.error = e;
+                Action::None
+            }
+        }
+    }
+    fn input_field(&mut self, s: &Surface, field: Field, x: f32, y: f32, w: f32, label: &str) {
+        let is_selected = self.editing == Some(field);
+        let value = match field {
+            Field::Nick => &mut self.nickname,
+            Field::Address => &mut self.address,
+        };
+        s.text(label, x, y - 6., 11., MUTED);
+        s.rect(x, y, w, 36., alpha(INK, 0.82));
+        s.border(x, y, w, 36., if is_selected { GOLD } else { EDGE });
+        let mut display = value.clone();
+        while s.measure(&display, 15.) > w - 29. && !display.is_empty() {
+            display.remove(0);
+        }
+        let width = s.measure(&display, 15.);
+        if is_selected && self.select_all && !display.is_empty() {
+            s.rect(x + 8., y + 6., width + 3., 23., alpha(GOLD, 0.4));
+        }
+        s.text(&display, x + 9., y + 23., 15., PAPER);
+        if is_selected && (get_time() * 2.) as i32 % 2 == 0 {
+            s.rect(x + 11. + width, y + 9., 1.4, 18., GOLD);
+        }
+        if s.click && s.over(x, y, w, 36.) {
+            self.editing = Some(field);
+            self.select_all = true;
+        }
+    }
+    fn handle_text(&mut self) {
+        let Some(field) = self.editing else {
+            while get_char_pressed().is_some() {}
+            return;
+        };
+        let value = match field {
+            Field::Nick => &mut self.nickname,
+            Field::Address => &mut self.address,
+        };
+        let limit = match field {
+            Field::Nick => 18,
+            Field::Address => 180,
+        };
+        let ctrl = is_key_down(KeyCode::LeftControl)
+            || is_key_down(KeyCode::RightControl)
+            || is_key_down(KeyCode::LeftSuper)
+            || is_key_down(KeyCode::RightSuper);
+        if ctrl && is_key_pressed(KeyCode::A) {
+            self.select_all = true;
+        }
+        if is_key_pressed(KeyCode::Backspace) || is_key_pressed(KeyCode::Delete) {
+            if self.select_all {
+                value.clear();
+            } else {
+                value.pop();
+            }
+            self.select_all = false;
+        }
+        let mut incoming = String::new();
+        if ctrl && is_key_pressed(KeyCode::V) {
+            incoming = macroquad::miniquad::window::clipboard_get().unwrap_or_default();
+        }
+        while let Some(c) = get_char_pressed() {
+            if !ctrl {
+                incoming.push(c);
+            }
+        }
+        for ch in incoming.chars().filter(|c| !c.is_control()) {
+            if self.select_all {
+                value.clear();
+                self.select_all = false;
+            }
+            if value.chars().count() < limit {
+                value.push(ch);
+            }
+        }
+    }
+    fn menu(&mut self, s: &Surface, status: &str) -> Action {
+        if self.menu_font_scale != s.scale {
+            // Growing Macroquad's glyph atlas mid-frame invalidates the UVs of
+            // earlier draw calls. Warm the title and UI text before drawing.
+            s.measure("ЛИНИЯ ФРОНТА", 83.);
+            s.measure("FRONTLINE SURGE", 16.);
+            let letters = "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя0123456789.: / →·";
+            for size in [11., 12., 14., 15., 17.] {
+                s.measure(letters, size);
+            }
+            self.menu_font_scale = s.scale;
+        }
+        s.vignette();
+        let x = 52.;
+        let y = (s.h - 484.) * 0.46;
+        s.logo(x, 30.);
+        if s.button(s.w - 116., 29., 66., 34., "Выход", false) {
+            return Action::Quit;
+        }
+        s.line(x, y + 1., x + 25., y + 1., 2., GOLD);
+        s.text(
+            "СЕТЕВАЯ ИГРА   /   КОМАНДНЫЙ БОЙ",
+            x + 36.,
+            y + 5.,
+            12.,
+            GOLD,
+        );
+        // Deliberately offset the second strike for a heavy screen-printed title.
+        for (label, base, col) in [("ЛИНИЯ", y + 87., PAPER), ("ФРОНТА", y + 161., GOLD)]
+        {
+            s.text(label, x - 2., base, 83., col);
+            s.text(label, x, base, 83., col);
+        }
+        s.text(
+            "Промышленная долина, сектор Сен-Лоран. Две команды",
+            x,
+            y + 205.,
+            15.,
+            PAPER,
+        );
+        s.text(
+            "строят базы, снабжают технику и ведут разведку с дронов.",
+            x,
+            y + 228.,
+            15.,
+            PAPER,
+        );
+        self.input_field(s, Field::Nick, x, y + 280., 170., "ПОЗЫВНОЙ");
+        self.input_field(s, Field::Address, x + 181., y + 280., 239., "АДРЕС СЕРВЕРА");
+        s.text("КОМАНДА", x, y + 336., 11., MUTED);
+        for (idx, (key, label, color)) in [
+            ("blue", "Синие", BLUE_TEAM),
+            ("auto", "Авто", GOLD),
+            ("red", "Красные", RED_TEAM),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let bx = x + idx as f32 * 99.;
+            if s.button(bx, y + 343., 92., 30., label, false) {
+                self.choice = key;
+                self.editing = None;
+            }
+            if self.choice == *key {
+                s.rect(bx, y + 371., 92., 2., *color);
+            }
+        }
+        if is_key_pressed(KeyCode::Tab) {
+            self.editing = Some(if self.editing == Some(Field::Nick) {
+                Field::Address
+            } else {
+                Field::Nick
+            });
+            self.select_all = true;
+        }
+        self.handle_text();
+        if s.button(x, y + 386., 224., 45., "Вступить в бой   →", true)
+            || is_key_pressed(KeyCode::Enter)
+        {
+            return self.submit();
+        }
+        if s.button(x + 235., y + 386., 154., 45., "Управление", false) {
+            self.help = true;
+            self.help_page = 0;
+            self.editing = None;
+        }
+        if s.button(x, y + 440., 224., 35., "На локальный сервер", false) {
+            self.address = "127.0.0.1:8787".into();
+            return self.submit();
+        }
+        let message = if self.error.is_empty() {
+            status
+        } else {
+            &self.error
+        };
+        s.wrap(message, x, y + 492., 510., 14., RED_TEAM);
+        s.rect(x, s.h - 46., 7., 7., GOLD);
+        s.text(
+            "СЕН-ЛОРАН   /   ПРОМЫШЛЕННАЯ ДОЛИНА",
+            x + 16.,
+            s.h - 39.,
+            12.,
+            MUTED,
+        );
+        Action::None
+    }
+    fn controls(&mut self, s: &Surface) -> Action {
+        let (x, y) = s.panel(684., 542., "СПРАВКА ОПЕРАТОРА", "Управление");
+        for (i, label) in ["Пехота", "Снабжение", "Техника", "Разведка"]
+            .iter()
+            .enumerate()
+        {
+            let xx = x + 28. + i as f32 * 150.;
+            if s.button(xx, y + 104., 140., 33., label, false) {
+                self.help_page = i as u8;
+            }
+            if self.help_page == i as u8 {
+                s.rect(xx, y + 135., 140., 2., GOLD);
+            }
+        }
+        let rows: &[(&str, &str)] = match self.help_page {
+            1 => &[
+                ("E у залежи", "Добыть древесину, металл, нефть или порох"),
+                ("K", "Каталог рецептов, стоимость и производство"),
+                ("B / Q / ЛКМ", "Открыть чертёж / сменить план / поставить"),
+                (
+                    "Нефтеперегонка",
+                    "8 дерева + 6 металла; E: 4 нефти → 6 топлива за 12 с",
+                ),
+                ("Мастерская", "Постройка за 6 дерева и 8 металла"),
+                (
+                    "C у мастерской",
+                    "Изготовить боеприпасы за 2 пороха и 1 металл",
+                ),
+                ("E у стены", "Отремонтировать своё укрытие"),
+            ],
+            2 => &[
+                ("F", "Занять место водителя / выйти из машины"),
+                ("W S / A D", "Газ и тормоз / поворот"),
+                ("ЛКМ / ПКМ в танке", "Пушка / пулемёт"),
+                ("G у техники", "Заправить или отремонтировать машину"),
+                (
+                    "V  /  U",
+                    "Выбрать комплект / установить у своей мастерской",
+                ),
+                (
+                    "T у грузовика",
+                    "Выбери материал и количество для погрузки или выгрузки",
+                ),
+                ("M", "Свериться с картой дорог и нефтепромыслов"),
+            ],
+            3 => &[
+                ("J", "Выпустить или отозвать личный разведдрон"),
+                ("W A S D", "Горизонтальный полёт"),
+                ("Shift / ПКМ", "Подняться / снизиться"),
+                ("Мышь / ЛКМ", "Повернуть камеру / оставить командную метку"),
+                ("Z / X", "Включить цифровой зум ×2 / дать импульс"),
+                (
+                    "Запас хода",
+                    "Батареи хватает на 60 секунд. Дальность от оператора 65 м.",
+                ),
+                (
+                    "Повторный запуск",
+                    "После отзыва — 18 с. После потери аппарата — 45 с.",
+                ),
+            ],
+            _ => &[
+                ("W A S D / Shift", "Движение / бег"),
+                (
+                    "ЛКМ / ПКМ / R / N",
+                    "Огонь / прицел / перезарядка / режим огня",
+                ),
+                (
+                    "1 / 2 / 3   ·   H",
+                    "MR-7 / VX-9 / AR-4   ·   бросок гранаты",
+                ),
+                (
+                    "E рядом с объектом",
+                    "Добыть ресурс или воспользоваться производством",
+                ),
+                ("B / Q / ЛКМ", "Чертёж / сменить постройку / разместить"),
+                ("M / I / K", "Карта / инвентарь / крафт"),
+                ("Tab / F3 / Esc", "Таблица бойцов / FPS / меню"),
+            ],
+        };
+        for (i, (key, desc)) in rows.iter().enumerate() {
+            let by = y + 172. + i as f32 * 33.;
+            s.text(key, x + 29., by, 14., GOLD);
+            s.text(desc, x + 221., by, 14., PAPER);
+            s.line(x + 28., by + 9., x + 655., by + 9., 0.7, alpha(EDGE, 0.22));
+        }
+        s.text("СВОЙ СЕРВЕР", x + 28., y + 426., 11., GOLD);
+        s.wrap("Запусти frontline-server отдельно. На этом компьютере подключайся к 127.0.0.1:8787. Для друзей в одной сети нужен адрес компьютера с сервером.",x+28.,y+451.,618.,14.,MUTED);
+        if s.button(x + 28., y + 493., 141., 35., "Назад", true) {
+            self.help = false;
+        }
+        Action::None
+    }
+    fn compass(s: &Surface, yaw: f64) {
+        let heading = yaw.to_degrees() as f32;
+        let center = s.w * 0.5;
+        for step in ((heading - 50.) / 5.).floor() as i32..=((heading + 50.) / 5.).ceil() as i32 {
+            let deg = step * 5;
+            let a = deg.rem_euclid(360);
+            let x = center + (deg as f32 - heading) * 3.1;
+            let major = a % 45 == 0;
+            s.line(
+                x,
+                32.,
+                x,
+                if major { 40. } else { 35. },
+                1.2,
+                alpha(PAPER, 0.85),
+            );
+            if major || a % 15 == 0 {
+                let text = if major {
+                    ["С", "СВ", "В", "ЮВ", "Ю", "ЮЗ", "З", "СЗ"][(a / 45) as usize].to_owned()
+                } else {
+                    a.to_string()
+                };
+                s.mid(&text, x + 1., 26., 12., INK);
+                s.mid(&text, x, 25., 12., PAPER);
+            }
+        }
+        s.line(center - 3., 45., center, 40., 1.8, GOLD);
+        s.line(center, 40., center + 3., 45., 1.8, GOLD);
+    }
+    fn drone_hud(s: &Surface, state: &Value, p: &Value, d: &Value, zoom: bool) {
+        let a = Color::new(0.41, 0.91, 0.81, 1.);
+        let cx = s.w * 0.5;
+        let cy = s.h * 0.5;
+        Self::compass(s, number(d, "yaw", 0.));
+        for (x, y, dx, dy) in [
+            (24., 23., 1., 1.),
+            (s.w - 24., 23., -1., 1.),
+            (24., s.h - 23., 1., -1.),
+            (s.w - 24., s.h - 23., -1., -1.),
+        ] {
+            s.line(x, y, x + dx * 31., y, 1.4, a);
+            s.line(x, y, x, y + dy * 31., 1.4, a);
+        }
+        for (dx, dy) in [(-1., -1.), (1., -1.), (-1., 1.), (1., 1.)] {
+            let x = cx + dx * 16.;
+            let y = cy + dy * 12.;
+            s.line(x, y, x - dx * 6., y, 1.3, a);
+            s.line(x, y, x, y - dy * 6., 1.3, a);
+        }
+        s.rect(cx - 1., cy - 1., 2., 2., a);
+        s.rect(36., 33., 201., 67., PLATE);
+        s.rect(47., 47., 5., 5., a);
+        s.text("КАНАЛ ДРОНА", 61., 54., 13., a);
+        s.text(
+            if zoom { "FPV   ×2" } else { "FPV   ×1" },
+            47.,
+            83.,
+            23.,
+            PAPER,
+        );
+        let signal = (number(d, "signal", 1.).clamp(0., 1.) * 100.).round() as i32;
+        s.rect(s.w - 230., 33., 194., 67., PLATE);
+        s.text("ВИДЕОСВЯЗЬ", s.w - 217., 55., 11., a);
+        s.text(&format!("{}%", signal), s.w - 217., 83., 20., PAPER);
+        for i in 0..5 {
+            let h = 5. + i as f32 * 3.;
+            s.rect(
+                s.w - 125. + i as f32 * 11.,
+                83. - h,
+                7.,
+                h,
+                if i * 20 < signal { a } else { EDGE },
+            );
+        }
+        let roll = number(d, "roll", 0.).clamp(-0.95, 0.95) as f32;
+        let pitch = number(d, "pitch", 0.).clamp(-1.25, 1.25) as f32;
+        let horizon = cy + pitch * 54.;
+        let (sin, cos) = (-roll).sin_cos();
+        for sign in [-1., 1.] {
+            for offset in [35., 55.] {
+                let far = offset + if offset == 35. { 13. } else { 8. };
+                s.line(
+                    cx + sign * offset * cos,
+                    horizon + sign * offset * sin,
+                    cx + sign * far * cos,
+                    horizon + sign * far * sin,
+                    1.3,
+                    alpha(a, 0.85),
+                );
+            }
+        }
+        let speed = number(d, "speed", 0.).max(0.);
+        let climb = number(d, "vSpeed", 0.);
+        let tx = 36.;
+        let ty = s.h * 0.5 - 29.;
+        s.rect(tx, ty, 120., 52., PLATE);
+        s.text("СКОРОСТЬ / ВЕРТ.", tx + 8., ty + 16., 10., MUTED);
+        s.text(
+            &format!("{:.0}  /  {:+.0} м/с", speed, climb),
+            tx + 8.,
+            ty + 39.,
+            15.,
+            a,
+        );
+        let battery = number(d, "battery", 0.).clamp(0., 60.);
+        let altitude = number(d, "y", 0.).max(0.);
+        let range = (number(d, "x", 0.) - number(p, "x", 0.))
+            .hypot(number(d, "z", 0.) - number(p, "z", 0.));
+        let y = s.h - 120.;
+        s.rect(36., y, 274., 83., PLATE);
+        s.text("БАТАРЕЯ", 48., y + 19., 10., MUTED);
+        s.right(
+            &clock(battery),
+            s.w.min(296.),
+            y + 21.,
+            16.,
+            if battery < 12. { RED_TEAM } else { a },
+        );
+        s.rect(48., y + 29., 248., 3., EDGE);
+        s.rect(48., y + 29., 248. * battery as f32 / 60., 3., a);
+        s.text(
+            &format!("Высота   {:.0} м", altitude),
+            48.,
+            y + 55.,
+            14.,
+            PAPER,
+        );
+        s.right(
+            &format!("Удаление   {:.0} м", range),
+            296.,
+            y + 55.,
+            14.,
+            PAPER,
+        );
+        s.text("Shift   вверх     ПКМ   вниз", 48., y + 75., 12., a);
+        let newest = state["markers"].as_array().into_iter().flatten().find(|m| {
+            m["team"] == p["team"] && m["owner"] == p["id"] && number(m, "remaining", 0.) > 0.
+        });
+        let x = s.w - 310.;
+        s.rect(x, y, 274., 83., PLATE);
+        s.text("КОМАНДНАЯ МЕТКА", x + 12., y + 19., 10., MUTED);
+        s.text(
+            &newest.map_or_else(
+                || "ЛКМ  Отметить точку".to_owned(),
+                |m| format!("Отмечено   ·   {} с", count(m, "remaining", 0)),
+            ),
+            x + 12.,
+            y + 46.,
+            16.,
+            PAPER,
+        );
+        s.text(
+            "Z  Зум   ·   M  Карта   ·   J  Отозвать",
+            x + 12.,
+            y + 72.,
+            12.,
+            a,
+        );
+        let charges = count(d, "charges", 0);
+        let pulse = if charges == 0 {
+            "Импульс израсходован"
+        } else if battery < 14. {
+            "Для импульса мало энергии"
+        } else {
+            "X  Импульс  ·  14 с батареи"
+        };
+        s.rect(x, y - 32., 274., 26., PLATE);
+        s.text(
+            pulse,
+            x + 12.,
+            y - 14.,
+            13.,
+            if charges > 0 && battery >= 14. {
+                a
+            } else {
+                MUTED
+            },
+        );
+    }
+    fn hud(&mut self, s: &Surface, state: &Value, p: &Value) {
+        if let Some(d) = own_drone(state, p) {
+            Self::drone_hud(s, state, p, d, self.drone_zoom);
+            if self.scoreboard {
+                Self::board(s, state, p);
+            }
+            return;
+        }
+        let players = &state["players"];
+        let score = &state["scores"];
+        let alive = flag(p, "alive", true);
+        let building = flag(p, "buildMode", false);
+        let local_team = string(p, "team", "blue");
+        let vehicles = &state["vehicles"];
+        let vehicle = vehicles.as_array().into_iter().flatten().find(|v| {
+            !p["vehicleId"].is_null() && v["id"] == p["vehicleId"] && !flag(v, "destroyed", false)
+        });
+        let parked = nearest(vehicles, p, 6.0, |v| {
+            !flag(v, "destroyed", false)
+                && (string(v, "team", "") == local_team
+                    || string(v, "team", "") == "neutral"
+                    || string(v, "team", "").is_empty())
+        });
+        let factory = nearest(&state["factories"], p, 6.0, |v| {
+            string(v, "team", "") == local_team
+        });
+        let cx = s.w / 2.;
+        let cy = s.h / 2.;
+        let hurt = number(p, "hitFlash", 0.) as f32;
+        if hurt > 0. {
+            let band = s.h * 0.009;
+            for i in 0..10 {
+                let v = i as f32;
+                let c = alpha(RED_TEAM, 0.45 * hurt.min(1.) * (1. - v / 10.).powi(2));
+                let inset = band * v;
+                s.rect(inset, inset, s.w - 2. * inset, band + 0.5, c);
+                s.rect(inset, s.h - inset - band, s.w - 2. * inset, band + 0.5, c);
+                s.rect(
+                    inset,
+                    inset + band,
+                    band + 0.5,
+                    s.h - 2. * inset - 2. * band,
+                    c,
+                );
+                s.rect(
+                    s.w - inset - band,
+                    inset + band,
+                    band + 0.5,
+                    s.h - 2. * inset - 2. * band,
+                    c,
+                );
+            }
+        }
+        s.rect(24., 22., 188., 75., PLATE);
+        s.rect(24., 22., 2., 75., GOLD);
+        s.text("КОМАНДНЫЙ БОЙ", 36., 40., 11., MUTED);
+        s.text(
+            &count(score, "blue", 0).to_string(),
+            36.,
+            68.,
+            25.,
+            BLUE_TEAM,
+        );
+        s.right(
+            &count(score, "red", 0).to_string(),
+            199.,
+            68.,
+            25.,
+            RED_TEAM,
+        );
+        s.mid(
+            &clock(number(state, "remaining", 420.)),
+            118.,
+            66.,
+            16.,
+            PAPER,
+        );
+        let team = if string(p, "team", "blue") == "blue" {
+            "Синие"
+        } else {
+            "Красные"
+        };
+        let online = players.as_array().map_or(0, Vec::len);
+        let cap = count(state, "fragLimit", 0);
+        let detail = if online < 2 {
+            "Ждём соперника".into()
+        } else if cap > 0 {
+            format!("До {cap} очков")
+        } else {
+            format!("В сети: {online}")
+        };
+        s.text(&format!("{team}   ·   {detail}"), 36., 87., 12., MUTED);
+        let drone_cd = count(p, "droneCooldown", 0);
+        let shortcut = if drone_cd > 0 {
+            format!("M  Карта    ·    J  Дрон через {drone_cd} с")
+        } else {
+            "M  Карта    ·    J  Дрон".into()
+        };
+        s.text(&shortcut, 26., 115., 11., PAPER);
+        Self::compass(s, number(p, "yaw", 0.));
+        let vehicle_gun = vehicle.is_some_and(|v| matches!(string(v, "kind", ""), "mbt" | "apc"));
+        if alive && !building && (vehicle.is_none() || vehicle_gun) {
+            if number(p, "hitConfirm", 0.) > 0. {
+                for (dx, dy) in [(-1., -1.), (1., -1.), (-1., 1.), (1., 1.)] {
+                    s.line(
+                        cx + dx * 5.,
+                        cy + dy * 5.,
+                        cx + dx * 9.,
+                        cy + dy * 9.,
+                        2.,
+                        GOLD,
+                    );
+                }
+            } else if number(p, "reload", 0.) <= 0. && number(p, "aim", 0.) < 0.75 {
+                let spread = 5.
+                    + number(p, "recoil", 0.) as f32 * 10.
+                    + if flag(p, "moving", false) { 2. } else { 0. };
+                for (dx, dy) in [(-1., 0.), (1., 0.), (0., -1.), (0., 1.)] {
+                    s.line(
+                        cx + dx * spread,
+                        cy + dy * spread,
+                        cx + dx * (spread + 4.),
+                        cy + dy * (spread + 4.),
+                        2.6,
+                        alpha(INK, 0.7),
+                    );
+                    s.line(
+                        cx + dx * spread,
+                        cy + dy * spread,
+                        cx + dx * (spread + 4.),
+                        cy + dy * (spread + 4.),
+                        1.3,
+                        PAPER,
+                    );
+                }
+            }
+        }
+        let y = s.h - 100.;
+        s.rect(23., y, 385., 76., PLATE);
+        let hp = count(p, "hp", 100).max(0);
+        s.text("ЗДОРОВЬЕ", 34., y + 15., 10., MUTED);
+        s.text(
+            &hp.to_string(),
+            33.,
+            y + 45.,
+            29.,
+            if hp < 32 { RED_TEAM } else { PAPER },
+        );
+        for (by, f, color, h) in [
+            (y + 52., hp as f32 / 100., PAPER, 3.),
+            (y + 61., number(p, "stamina", 100.) as f32 / 100., GOLD, 2.),
+        ] {
+            s.rect(34., by, 62., h, EDGE);
+            s.rect(34., by, 62. * f.clamp(0., 1.), h, color);
+        }
+        s.line(109., y + 10., 109., y + 66., 1., EDGE);
+        for (i, (key, label)) in MATERIALS.iter().enumerate() {
+            let xx = 120. + i as f32 * 56.;
+            s.text(label, xx, y + 22., 10., MUTED);
+            s.text(&count(p, key, 0).to_string(), xx, y + 46., 19., PAPER);
+        }
+        s.text("K  Крафт   ·   B  Стройка", 120., y + 65., 11., GOLD);
+        s.right("I   Рюкзак", 395., y + 65., 11., MUTED);
+        if let Some(v) = vehicle {
+            let w = 320.;
+            let x = s.w - w - 24.;
+            let y = s.h - 164.;
+            s.rect(x, y, w, 140., PLATE);
+            s.text(
+                vehicle_name(string(v, "kind", "")),
+                x + 12.,
+                y + 25.,
+                20.,
+                PAPER,
+            );
+            let speed = (number(v, "speed", 0.).abs() * 3.6).round();
+            s.right(&format!("{speed} км/ч"), x + w - 13., y + 24., 15., GOLD);
+            for (i, (label, key, max_key, color)) in [
+                ("КОРПУС", "hp", "maxHp", BLUE_TEAM),
+                ("ТОПЛИВО", "fuel", "maxFuel", GOLD),
+            ]
+            .iter()
+            .enumerate()
+            {
+                let xx = x + 13. + i as f32 * 150.;
+                let val = number(v, key, 0.);
+                let max = number(v, max_key, 100.).max(1.);
+                s.text(label, xx, y + 47., 10., MUTED);
+                s.right(
+                    &format!("{} / {}", val.ceil() as i32, max.ceil() as i32),
+                    xx + 134.,
+                    y + 48.,
+                    12.,
+                    PAPER,
+                );
+                s.rect(xx, y + 54., 134., 3., EDGE);
+                s.rect(
+                    xx,
+                    y + 54.,
+                    134. * (val / max).clamp(0., 1.) as f32,
+                    3.,
+                    *color,
+                );
+            }
+            let kit = kit_name(string(v, "upgrade", ""));
+            let level = match count(v, "upgradeLevel", 0) {
+                1 => " I",
+                2 => " II",
+                _ => "",
+            };
+            s.text(
+                &format!("Комплект: {kit}{level}"),
+                x + 13.,
+                y + 79.,
+                13.,
+                PAPER,
+            );
+            if vehicle_gun {
+                let ammo = if string(v, "kind", "") == "mbt" {
+                    format!(
+                        "Пушка {} · Пулемёт {}",
+                        count(v, "shells", 0),
+                        count(v, "mgAmmo", 0)
+                    )
+                } else {
+                    format!("Пулемёт {}", count(v, "mgAmmo", 0))
+                };
+                s.right(&ammo, x + w - 13., y + 79., 13., GOLD);
+            }
+            let capacity = count(v, "cargoCapacity", 0);
+            if capacity > 0 {
+                let cargo = &v["cargo"];
+                let total: i32 = MATERIALS.iter().map(|(key, _)| count(cargo, key, 0)).sum();
+                let shipped: Vec<String> = MATERIALS
+                    .iter()
+                    .filter_map(|(key, label)| {
+                        let n = count(cargo, key, 0);
+                        (n > 0).then(|| format!("{label} {n}"))
+                    })
+                    .collect();
+                let manifest = if shipped.is_empty() {
+                    "пусто".into()
+                } else {
+                    shipped.join(" · ")
+                };
+                s.text(
+                    &s.shorten(
+                        &format!("Груз: {total}/{capacity}  ·  {manifest}"),
+                        12.,
+                        w - 22.,
+                    ),
+                    x + 13.,
+                    y + 101.,
+                    12.,
+                    MUTED,
+                );
+            } else {
+                s.text("F  Выйти из машины", x + 13., y + 101., 12., MUTED);
+            }
+            s.text(
+                if vehicle_gun {
+                    if string(v, "kind", "") == "mbt" {
+                        "ЛКМ  Пушка  ·  ПКМ  Пулемёт  ·  F  Выход"
+                    } else {
+                        "ЛКМ  Пулемёт  ·  F  Выход"
+                    }
+                } else if capacity > 0 {
+                    "I  Груз и рюкзак    ·    F  Выйти"
+                } else {
+                    "W S  Газ / тормоз    ·    A D  Поворот"
+                },
+                x + 13.,
+                y + 124.,
+                12.,
+                GOLD,
+            );
+        } else {
+            let x = s.w - 221.;
+            s.rect(x, y, 197., 76., PLATE);
+            let weapon = match string(p, "weapon", "mr7") {
+                "vx9" => "2   VX-9",
+                "ar4" => "3   AR-4",
+                _ => "1   MR-7",
+            };
+            s.right(weapon, s.w - 36., y + 17., 11., MUTED);
+            s.text(
+                &format!("N  {}", crafting::mode_name(string(p, "fireMode", "semi"))),
+                x + 11.,
+                y + 17.,
+                11.,
+                GOLD,
+            );
+            let ammo = count(p, "ammo", 0);
+            let reserve = count(p, "reserve", 0);
+            s.right(
+                &format!("{ammo}  /  {reserve}"),
+                s.w - 36.,
+                y + 47.,
+                28.,
+                if ammo == 0 { RED_TEAM } else { PAPER },
+            );
+            let condition = if number(p, "reload", 0.) > 0. {
+                "ПЕРЕЗАРЯДКА…"
+            } else if ammo == 0 {
+                "R   ПЕРЕЗАРЯДИТЬ"
+            } else {
+                "1 / 2 / 3   ОРУЖИЕ"
+            };
+            s.text(
+                &format!("H   Гранаты: {}", count(p, "grenades", 0)),
+                x + 11.,
+                y + 66.,
+                10.,
+                MUTED,
+            );
+            s.right(
+                if condition == "1 / 2 / 3   ОРУЖИЕ" {
+                    "1 / 2 / 3"
+                } else {
+                    condition
+                },
+                s.w - 36.,
+                y + 66.,
+                10.,
+                GOLD,
+            );
+        }
+        let mut sy = s.h * 0.625;
+        let station = if building {
+            None
+        } else {
+            self.available_station(state, p)
+        };
+        let hint = if building {
+            ""
+        } else {
+            match station {
+                Some("workshop") => "[E] Открыть мастерскую",
+                Some("refinery") => "[E] Открыть нефтеперегонку",
+                _ => string(p, "hint", ""),
+            }
+        };
+        let msg = if number(p, "messageT", 0.) > 0. {
+            string(p, "message", "")
+        } else {
+            ""
+        };
+        let build_text = if building {
+            let k = string(p, "buildKind", "wall");
+            format!(
+                "{}  ·  {}  |  Q  Выбор    {}    B  Отмена",
+                plan_name(k),
+                plan_cost(k),
+                if flag(&p["preview"], "valid", false) {
+                    "ЛКМ  Поставить"
+                } else {
+                    "Нет места или ресурсов"
+                }
+            )
+        } else {
+            String::new()
+        };
+        let build = build_text.as_str();
+        let mut context = String::new();
+        if alive && !building {
+            if let Some(f) = factory {
+                if string(f, "kind", "") == "workshop" {
+                    if vehicle.is_some() || parked.is_some() {
+                        let selected = string(p, "upgradeChoice", "mobility");
+                        context = format!(
+                            "Мастерская   ·   V  Комплект: {}    U  Установить",
+                            kit_name(selected)
+                        );
+                    } else if hint.is_empty() {
+                        context = "Мастерская   ·   C  Боеприпасы".into();
+                    }
+                } else if hint.is_empty() {
+                    let time = number(f, "remaining", 0.);
+                    context = if time > 0. {
+                        format!("Нефтеперегонка   ·   Готово через {}", clock(time))
+                    } else if number(f, "ready", 0.) > 0. {
+                        "Можно забрать готовое топливо".into()
+                    } else {
+                        "Нефтеперегонка готова к запуску".into()
+                    };
+                }
+            } else if let Some(v) = parked {
+                if vehicle.is_none() {
+                    if hint.is_empty() {
+                        context = format!(
+                            "{}   ·   F  Сесть   ·   G  Обслужить",
+                            vehicle_name(string(v, "kind", ""))
+                        );
+                    } else if hint.contains("[F]") {
+                        context = vehicle_name(string(v, "kind", "")).into();
+                    }
+                }
+            }
+        }
+        if alive {
+            for (tx, col) in [
+                (build, GOLD),
+                (hint, PAPER),
+                (context.as_str(), MUTED),
+                (msg, MUTED),
+            ] {
+                if tx.is_empty() {
+                    continue;
+                }
+                let w = s.measure(tx, 14.) + 18.;
+                s.rect(cx - w / 2., sy - 17., w, 25., PLATE);
+                s.mid(tx, cx, sy, 14., col);
+                sy += 28.;
+            }
+        } else {
+            s.rect(cx - 183., cy - 52., 366., 104., PLATE);
+            s.mid("БОЕЦ ВЫБЫЛ", cx, cy - 14., 12., GOLD);
+            s.mid(
+                &format!(
+                    "Возвращение в бой через {} с",
+                    count(p, "respawnIn", 0).max(0)
+                ),
+                cx,
+                cy + 23.,
+                20.,
+                PAPER,
+            );
+        }
+        if let Some(events) = state["events"].as_array() {
+            let mut line = 0;
+            let elapsed = number(state, "elapsed", 0.);
+            for e in events
+                .iter()
+                .rev()
+                .filter(|e| {
+                    string(e, "type", "") == "kill" && elapsed - number(e, "at", elapsed) < 5.5
+                })
+                .take(3)
+            {
+                let a = string(e, "actorName", "Боец");
+                let b = string(e, "targetName", "Боец");
+                let ally = string(e, "team", "blue") == "blue";
+                let aw = s.measure(a, 13.);
+                let bw = s.measure(b, 13.);
+                let width = aw + bw + 35.;
+                let x = s.w - width - 24.;
+                let y = 24. + line as f32 * 25.;
+                line += 1;
+                s.rect(x, y, width, 22., PLATE);
+                s.text(
+                    a,
+                    x + 7.,
+                    y + 16.,
+                    13.,
+                    if ally { BLUE_TEAM } else { RED_TEAM },
+                );
+                s.text("›", x + aw + 14., y + 16., 13., PAPER);
+                s.text(
+                    b,
+                    x + aw + 27.,
+                    y + 16.,
+                    13.,
+                    if ally { RED_TEAM } else { BLUE_TEAM },
+                );
+            }
+        }
+        if self.scoreboard {
+            Self::board(s, state, p);
+        }
+    }
+    fn board(s: &Surface, state: &Value, local: &Value) {
+        let (x, y) = s.panel(964., 492., "КОМАНДНЫЙ БОЙ", "Таблица счёта");
+        s.text(
+            "Когда истечёт время, победит команда с большим числом фрагов.",
+            x + 28.,
+            y + 116.,
+            14.,
+            MUTED,
+        );
+        let players = state["players"]
+            .as_array()
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        for (i, (team, title, tint)) in [("blue", "Синие", BLUE_TEAM), ("red", "Красные", RED_TEAM)]
+            .into_iter()
+            .enumerate()
+        {
+            let xx = x + 28. + i as f32 * 460.;
+            s.text(
+                &format!("{}   /   {} фр.", title, count(&state["scores"], team, 0)),
+                xx,
+                y + 157.,
+                22.,
+                tint,
+            );
+            s.text("ПОЗЫВНОЙ", xx, y + 188., 10., MUTED);
+            for (right, label) in [
+                (230., "ОЧКИ"),
+                (298., "ФРАГИ"),
+                (361., "ПОМОЩЬ"),
+                (428., "СМЕРТИ"),
+            ] {
+                s.right(label, xx + right, y + 188., 10., MUTED);
+            }
+            s.line(xx, y + 197., xx + 428., y + 197., 1., EDGE);
+            let mut members: Vec<_> = players
+                .iter()
+                .filter(|p| string(p, "team", "") == team)
+                .collect();
+            members.sort_by_key(|p| {
+                (
+                    std::cmp::Reverse(count(p, "points", 0)),
+                    std::cmp::Reverse(count(p, "kills", 0)),
+                    count(p, "deaths", 0),
+                )
+            });
+            for (j, p) in members.iter().take(10).enumerate() {
+                let by = y + 220. + j as f32 * 23.;
+                let tint = if p["id"] == local["id"] { GOLD } else { PAPER };
+                s.text(
+                    &s.shorten(string(p, "name", "Боец"), 14., 168.),
+                    xx,
+                    by,
+                    14.,
+                    tint,
+                );
+                for (right, key) in [
+                    (230., "points"),
+                    (298., "kills"),
+                    (361., "assists"),
+                    (428., "deaths"),
+                ] {
+                    s.right(
+                        &count(p, key, 0).to_string(),
+                        xx + right,
+                        by,
+                        14.,
+                        if key == "points" { tint } else { PAPER },
+                    );
+                }
+            }
+        }
+        s.text(
+            "Личный счёт: 100 за фраг, 50 за помощь.",
+            x + 28.,
+            y + 470.,
+            13.,
+            MUTED,
+        );
+    }
+    pub fn draw(
+        &mut self,
+        mode: &str,
+        state: &Value,
+        local: &Value,
+        font: &Font,
+        status: &str,
+        endpoint: &str,
+    ) -> Action {
+        let action = self.draw_scene(mode, state, local, font, status, endpoint);
+        if is_key_pressed(KeyCode::F3) {
+            self.fps_visible = !self.fps_visible;
+        }
+        self.fps_elapsed += get_frame_time();
+        self.fps_frames += 1;
+        if self.fps_elapsed >= 0.45 {
+            self.fps = self.fps_frames as f32 / self.fps_elapsed;
+            self.fps_frames = 0;
+            self.fps_elapsed = 0.;
+        }
+        if self.fps_visible {
+            let s = Surface::new(font);
+            let x = s.w - 88.;
+            let y = if mode == "menu" { s.h - 47. } else { 4. };
+            s.rect(x, y, 65., 17., PLATE);
+            s.right(
+                &format!(
+                    "{} FPS",
+                    if self.fps > 0. {
+                        self.fps.round() as i32
+                    } else {
+                        get_fps()
+                    }
+                ),
+                x + 58.,
+                y + 12.,
+                11.,
+                MUTED,
+            );
+        }
+        action
+    }
+    fn draw_scene(
+        &mut self,
+        mode: &str,
+        state: &Value,
+        local: &Value,
+        font: &Font,
+        status: &str,
+        endpoint: &str,
+    ) -> Action {
+        set_default_camera();
+        let s = Surface::new(font);
+        if self.help && (mode == "menu" || mode == "pause") {
+            return self.controls(&s);
+        }
+        if mode != "playing" {
+            self.inventory_open = false;
+            self.map_open = false;
+            self.craft_open = false;
+        }
+        if mode != "menu" {
+            self.editing = None;
+            self.error.clear();
+        }
+        match mode {
+            "menu" => self.menu(&s, status),
+            "connecting" => {
+                let (x, y) = s.panel(470., 238., "СЕТЕВАЯ ИГРА", "Подключение");
+                s.wrap(
+                    if status.is_empty() {
+                        "Ждём ответа сервера…"
+                    } else {
+                        status
+                    },
+                    x + 27.,
+                    y + 127.,
+                    410.,
+                    15.,
+                    MUTED,
+                );
+                if s.button(x + 27., y + 174., 145., 39., "Отмена", false) {
+                    Action::Leave
+                } else {
+                    Action::None
+                }
+            }
+            "playing" => {
+                if self.inventory_open {
+                    let (action, close) = self.inventory.draw(&s, state, local);
+                    if close {
+                        self.inventory_open = false;
+                    }
+                    return action;
+                }
+                if self.craft_open {
+                    let (action, close) = self.craft.draw(&s, state, local);
+                    if close {
+                        self.craft_open = false;
+                    }
+                    return action;
+                } else if self.map_open {
+                    if self.map.draw(&s, state, local) {
+                        self.map_open = false;
+                    }
+                } else {
+                    self.hud(&s, state, local);
+                }
+                Action::None
+            }
+            "pause" => {
+                let (x, y) = s.panel(490., 352., "СЕТЕВОЙ МАТЧ", "Меню боя");
+                s.text("Матч продолжается.", x + 27., y + 128., 15., MUTED);
+                if s.button(x + 27., y + 149., 235., 43., "Вернуться в бой   →", true)
+                {
+                    return Action::Resume;
+                }
+                if s.button(x + 272., y + 149., 190., 43., "Управление", false) {
+                    self.help = true;
+                }
+                if s.button(x + 27., y + 202., 435., 39., "Покинуть сервер", false) {
+                    return Action::Leave;
+                }
+                s.text("АДРЕС ДЛЯ ИГРОКОВ", x + 27., y + 277., 11., GOLD);
+                let address = if endpoint.is_empty() {
+                    "Адрес ещё не получен"
+                } else {
+                    endpoint
+                };
+                s.text(
+                    &s.shorten(address, 15., 285.),
+                    x + 27.,
+                    y + 307.,
+                    15.,
+                    PAPER,
+                );
+                if !endpoint.is_empty()
+                    && s.button(
+                        x + 333.,
+                        y + 282.,
+                        129.,
+                        37.,
+                        if get_time() - self.copied < 2. {
+                            "Скопировано"
+                        } else {
+                            "Копировать"
+                        },
+                        false,
+                    )
+                {
+                    macroquad::miniquad::window::clipboard_set(endpoint);
+                    self.copied = get_time();
+                }
+                Action::None
+            }
+            "ended" => {
+                let title = match string(state, "winner", "draw") {
+                    "red" => "Победа красных",
+                    "blue" => "Победа синих",
+                    _ => "Ничья",
+                };
+                let (x, y) = s.panel(500., 300., "РАУНД ЗАВЕРШЁН", title);
+                s.text(
+                    &format!(
+                        "Синие   {} : {}   Красные",
+                        count(&state["scores"], "blue", 0),
+                        count(&state["scores"], "red", 0)
+                    ),
+                    x + 27.,
+                    y + 149.,
+                    22.,
+                    PAPER,
+                );
+                s.text(
+                    &format!(
+                        "Следующий раунд через {} с",
+                        count(state, "nextRoundIn", 0).max(0)
+                    ),
+                    x + 27.,
+                    y + 187.,
+                    15.,
+                    MUTED,
+                );
+                if s.button(x + 27., y + 226., 206., 43., "Покинуть сервер", false) {
+                    Action::Leave
+                } else {
+                    Action::None
+                }
+            }
+            _ => Action::None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn invitations_parse_ipv4_dns_ipv6_and_custom_ports() {
+        for (input, host, port) in [
+            (" game.local ", "game.local", 8787),
+            ("192.168.1.20:9001", "192.168.1.20", 9001),
+            ("[::1]:9090", "::1", 9090),
+            ("::1", "::1", 8787),
+        ] {
+            assert_eq!(parse_endpoint(input).unwrap(), (host.to_string(), port));
+        }
+        for bad in ["http://bad", ":123", "host:0", "host:90000", "[::1]:", ""] {
+            assert!(parse_endpoint(bad).is_err());
+        }
+    }
+}

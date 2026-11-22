@@ -1,0 +1,27 @@
+name: Client CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  client-test-build:
+    name: client-test-build
+    runs-on: windows-2022
+    env:
+      RUSTUP_TOOLCHAIN: stable-x86_64-pc-windows-gnu
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - name: Install the Windows x64 GNU toolchain
+        run: rustup toolchain install stable-x86_64-pc-windows-gnu --profile minimal
+      - name: Test
+        run: cargo test --all-features --locked
+      - name: Build
+        run: cargo build --release --locked
