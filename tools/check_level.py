@@ -132,4 +132,5 @@ def check(m):
             'metres; opposing base:',round(d[{'blue':'red','red':'blue'}[color]+'/hq']))
     print(f"{len(solids)} solid props; {len(graphdata['edges'])} tested roads; "
           f"{len(starts['blue'])*len(starts['red'])} spawn sightline checks")
-if __name__=='__main__':check(json.loads(LEVEL.read_text()))
+if __name__ == '__main__':
+    check(json.loads(LEVEL.read_text(encoding='utf-8')))
