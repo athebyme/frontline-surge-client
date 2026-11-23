@@ -90,6 +90,9 @@ struct SkyUniforms {
     time: f32,
     sky_state: [f32; 4],
     sun: [f32; 3],
+    light: [f32; 16],
+    eye: [f32; 3],
+    graphics: [f32; 4],
 }
 
 #[repr(C)]
@@ -210,7 +213,7 @@ impl World {
         let scene_shader = shader(
             gpu,
             include_str!("shaders/field.vert"),
-            include_str!("shaders/field.frag"),
+            concat!(include_str!("shaders/field.frag"), "\n", include_str!("shaders/sun_air.glsl")),
             &[
                 ("ViewProjection", Matrix),
                 ("Light", Matrix),
@@ -252,14 +255,17 @@ impl World {
         let sky_shader = shader(
             gpu,
             include_str!("shaders/sky.vert"),
-            include_str!("shaders/sky.frag"),
+            concat!(include_str!("shaders/sky.frag"), "\n", include_str!("shaders/sun_air.glsl")),
             &[
                 ("InverseView", Matrix),
                 ("Time", Float1),
                 ("SkyState", Float4),
                 ("Sun", Float3),
+                ("Light", Matrix),
+                ("Eye", Float3),
+                ("Graphics", Float4),
             ],
-            &[],
+            &["ShadowMap"],
         );
         let layout = mq::BufferLayout {
             stride: VERTEX_BYTES as i32,
@@ -681,6 +687,7 @@ impl World {
                         }
                     }
                     let flag_pos = match key {
+                        "scout_buggy" => Vec3::from_array(frontline_surge::buggy::FLAG_SOCKET),
                         "mbt" => vec3(-0.86, 1.47, -1.96),
                         "patrol4x4" => vec3(-0.61, 0.8, -1.23),
                         _ => vec3(-0.9, 1.68, -2.53),
@@ -923,19 +930,26 @@ impl World {
             }
             gpu.begin_pass(target, mq::PassAction::Nothing);
             gpu.apply_pipeline(&self.sky_pipeline);
-            gpu.apply_bindings(&self.sky_bindings);
+            gpu.apply_bindings_from_slice(
+                &self.sky_bindings.vertex_buffers,
+                self.sky_bindings.index_buffer,
+                &[self.scenery_shadow.texture],
+            );
             gpu.apply_uniforms(mq::UniformsSource::table(&SkyUniforms {
                 inverse: vp.inverse().to_cols_array(),
                 time: (elapsed % 10000.) + (get_time() % 1.) as f32 * 0.01,
                 sky_state: self.sky.uniforms(self.thermal),
                 sun: self.sky.sun.to_array(),
+                light: self.scenery_shadow.projection.to_cols_array(),
+                eye: camera_pos.to_array(),
+                graphics: self.graphics.shader(),
             }));
             gpu.draw(0, 3, 1);
             gpu.apply_pipeline(&self.scene_pipeline);
             self.submit(gpu, vp, camera_pos, Pass::Scene);
             gpu.end_render_pass();
         }
-        moving::draw_shells(state, camera_pos);
+        moving::draw_shells(state, camera_pos, motion);
     }
 
     pub fn draw_build_preview(&self, p: &Value) {

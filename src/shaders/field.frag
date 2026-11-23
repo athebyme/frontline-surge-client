@@ -1,8 +1,13 @@
 #version 100
+#ifdef GL_OES_standard_derivatives
+#extension GL_OES_standard_derivatives : enable
+#endif
 precision highp float;
 uniform sampler2D Atlas;
 uniform highp sampler2D ShadowMap;
 uniform highp sampler2D MovingShadowMap;
+uniform mat4 Light;
+vec3 sunlitAir(vec3 color, vec3 direction, float distanceToSurface);
 uniform float Heat;
 uniform float MovingCasters;
 uniform sampler2D LandCover;
@@ -58,6 +63,15 @@ float visibilityLoss(highp sampler2D map, vec4 projected, float incidence, vec2 
             +mid.y*(left.x*tap(map,base-dx,q,gradient)+mid.x*tap(map,base,q,gradient)+right.x*tap(map,base+dx,q,gradient))
             +right.y*(left.x*tap(map,base-dx+dy,q,gradient)+mid.x*tap(map,base+dy,q,gradient)+right.x*tap(map,base+dx+dy,q,gradient));
   }
+  // Broader penumbra away from the blocker, limited in world metres so that
+  // thin objects retain a readable contact shadow on both texture resolutions.
+  float depth=dot(texture2D(map,q.xy).rgb,vec3(16711680.,65280.,255.)/16777215.);
+  float separation=219.9*max(0.,q.z-depth);
+  float spread=(.11+min(.49,separation*.065))/(2.*radius);
+  vec2 a=vec2(.94,.34)*spread, b=vec2(-a.y,a.x);
+  float broad=.25*(tap(map,q.xy+a,q,gradient)+tap(map,q.xy-a,q,gradient)
+                 +tap(map,q.xy+b,q,gradient)+tap(map,q.xy-b,q,gradient));
+  coverage=mix(coverage,broad,.48);
   float edge=min(min(q.x,1.-q.x),min(q.y,1.-q.y));
   return coverage*smoothstep(.002,.055,edge);
 }
@@ -67,17 +81,19 @@ float lamp(vec4 p,vec3 n){
   float falloff=clamp(1.-d2/max(.001,p.w*p.w),0.,1.);
   return falloff*falloff*(.25+.75*max(0.,dot(to*inversesqrt(max(.0001,d2)),n)));
 }
-vec4 materialSample(vec2 cell,vec2 within,float footprint){
+vec4 materialSample(float tile,vec2 within,float footprint){
   // Each footprint has wrapped gutters. Even grazing ground and UV wrap seams
   // can be filtered without pulling in a neighbouring atlas material.
-  vec2 atlasSize=vec2(2048.,1024.);
-  vec2 fine=(cell*256.+2.+252.*within)/atlasSize;
-  vec2 mid=(vec2(1536.,768.)+cell*64.+2.+60.*within)/atlasSize;
-  vec2 coarse=(vec2(0.,768.)+cell*16.+1.+14.*within)/atlasSize;
-  if(footprint<4.)return texture2D(Atlas,fine);
-  if(footprint<10.)return mix(texture2D(Atlas,fine),texture2D(Atlas,mid),smoothstep(4.,10.,footprint));
-  if(footprint<18.)return texture2D(Atlas,mid);
-  if(footprint<34.)return mix(texture2D(Atlas,mid),texture2D(Atlas,coarse),smoothstep(18.,34.,footprint));
+  float slot=tile>=25.?tile-7.:tile;
+  vec2 face=vec2(mod(slot,5.),floor(slot/5.));
+  vec2 lower=vec2(mod(slot,8.),floor(slot/8.));
+  vec2 fine=(face*400.+2.+396.*within)/2048.;
+  vec2 mid=(vec2(1200.,1600.)+lower*100.+2.+96.*within)/2048.;
+  vec2 coarse=(vec2(1200.,1900.)+lower*25.+1.+23.*within)/2048.;
+  if(footprint<1.)return texture2D(Atlas,fine);
+  if(footprint<4.)return mix(texture2D(Atlas,fine),texture2D(Atlas,mid),smoothstep(1.,4.,footprint));
+  if(footprint<5.)return texture2D(Atlas,mid);
+  if(footprint<16.)return mix(texture2D(Atlas,mid),texture2D(Atlas,coarse),smoothstep(5.,16.,footprint));
   return texture2D(Atlas,coarse);
 }
 void main(){
@@ -124,13 +140,17 @@ void main(){
     float near=1.-smoothstep(12.,30.,distance(world,Eye));
     pigment*=mix(1.,profile,near*(1.-abs(n.y)));
   }
-  vec2 cell=vec2(mod(tile,8.),floor(tile/8.));
   float d=distance(world,Eye);
   vec3 viewDir=(Eye-world)/max(.001,d);
   float closeDetail=mix(.32,1.,clamp(Graphics.w,0.,1.))*(1.-smoothstep(8.,68.,d));
   bool fissure=tile==25. || tile==29.;
-  float footprint=d*mix(1.8,1.,Graphics.w)/max(.28,abs(dot(n,viewDir)));
-  vec4 sampleData=materialSample(cell,fract(uv),fissure?0.:footprint);
+  float footprint=d*.38/max(.28,abs(dot(n,viewDir)));
+#ifdef GL_OES_standard_derivatives
+  // Size of the continuous UV before wrapping, expressed in fine texels per pixel.
+  footprint=396.*max(length(dFdx(uv)),length(dFdy(uv)));
+#endif
+  footprint*=mix(1.6,1.,Graphics.w);
+  vec4 sampleData=materialSample(tile,fract(uv),fissure?0.:footprint);
   if(fissure && sampleData.a<mix(.27,.72,smoothstep(12.,38.,d)))discard;
   vec3 base=pigment*mix(vec3(.982),sampleData.rgb,.12+.88*closeDetail);
   if(tile==1.||tile==2.||tile==14.||tile==15.||tile==26.){
@@ -175,7 +195,8 @@ void main(){
   ambient=mix(ambient,vec3(.315,.298,.345)*(.80+.20*up),.64*dusk);
   vec3 direct=mix(vec3(.079,.096,.132),vec3(.73,.688,.564),day);
   direct=mix(direct,vec3(.921,.462,.219),.84*dusk);
-  vec3 lit=base*(ambient+direct*incidence*vis);
+  float wrapped=clamp((dot(n,sun)+.14)/1.14,0.,1.);
+  vec3 lit=base*(ambient+direct*mix(incidence,wrapped,.45)*vis);
   if(tile==13.)lit+=base*day*.045*max(0.,-dot(n,sun))*vec3(.91,1.,.67);
   if(tile==9.||tile==16.||tile==27.||tile==8.||tile==26.){
     float gloss=mix(tile==16.?.88:tile==9.||tile==27.?.42:.07,sampleData.a,closeDetail);
@@ -197,7 +218,7 @@ void main(){
   float toward=dot(normalize(world.xz-Eye.xz+vec2(.0001)),normalize(Sun.xz))*.5+.5;
   vec3 haze=mix(vec3(.041,.055,.073),vec3(.737,.836,.862),day);
   haze=mix(haze,mix(vec3(.47,.379,.458),vec3(.999,.611,.370),toward),dusk*.89);
-  vec3 color=mix(lit,haze,fog);
+  vec3 color=sunlitAir(mix(lit,haze,fog),-viewDir,d);
   float luminance=dot(color,vec3(.2126,.7152,.0722));
   gl_FragColor=vec4(mix(vec3(luminance),color,Graphics.z),1.);
 }

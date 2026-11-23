@@ -25,3 +25,42 @@ jobs:
         run: cargo test --all-features --locked
       - name: Build
         run: cargo build --release --locked
+      - name: Read matching server revision
+        id: pair
+        shell: pwsh
+        run: |
+          $revision = (Get-Content tools/server-revision.txt -Raw).Trim()
+          if ($revision -notmatch '^[a-f0-9]{40}$') { throw 'Expected a pinned server commit' }
+          "revision=$revision" >> $env:GITHUB_OUTPUT
+      - name: Check out the playtest server
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: athebyme/frontline-surge-server
+          ref: ${{ steps.pair.outputs.revision }}
+          path: _playtest_server
+          persist-credentials: false
+      - name: Check maps and common simulation, then build the Win64 server
+        shell: pwsh
+        run: |
+          python tools/check_level.py
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          python tools/check_server_contract.py _playtest_server
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo build --release --locked --manifest-path _playtest_server/Cargo.toml
+      - name: Bundle the local playtest
+        shell: pwsh
+        run: |
+          $package = "dist/playtest"
+          New-Item -ItemType Directory -Force "$package/Client", "$package/Server" | Out-Null
+          Copy-Item target/release/frontline-surge.exe "$package/Client/FrontlineSurge.exe"
+          Copy-Item _playtest_server/target/release/frontline-server.exe "$package/Server/FrontlineServer.exe"
+          Copy-Item THIRD-PARTY.txt "$package/Client/THIRD-PARTY.txt"
+          Copy-Item _playtest_server/notices/THIRD-PARTY-Windows-GNU.txt "$package/Server/THIRD-PARTY.txt"
+          Copy-Item tools/Play.cmd, README.md "$package/"
+      - name: Save the Windows playtest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Frontline-Surge-0.5.4-Win64-Local
+          path: dist/playtest/
+          if-no-files-found: error
+          retention-days: 30

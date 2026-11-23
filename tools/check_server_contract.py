@@ -7,6 +7,7 @@ CONTRACT_FILES = (
     "src/wire.rs",
     "src/world_wire.rs",
     "src/arsenal.rs",
+    "src/buggy.rs",
     "src/fracture.rs",
     "src/rubble.rs",
     "src/vehicle_gun.rs",

@@ -1,5 +1,6 @@
 //! The field map combines surveyed terrain with friendly radio reports.
-use super::{alpha, flag, number, string, Surface, BLUE_TEAM, EDGE, GOLD, INK, MUTED, PAPER};
+use super::{alpha, flag, number, string, Surface, BLUE_TEAM, EDGE, GOLD, INK, MATERIALS, MUTED, PAPER};
+use super::stash_ui::material_symbol_scaled;
 use macroquad::prelude::*;
 use serde_json::Value;
 
@@ -102,10 +103,7 @@ enum Symbol {
     Vehicle,
     Drone,
     Marker,
-    Oil,
-    Wood,
-    Metal,
-    Powder,
+    Material(usize),
     General,
 }
 fn symbol(s: &Surface, p: Vec2, kind: Symbol, c: Color, r: f32, direction: f32) {
@@ -158,41 +156,8 @@ fn symbol(s: &Surface, p: Vec2, kind: Symbol, c: Color, r: f32, direction: f32) 
             }
             draw_circle(p.x * s.scale, p.y * s.scale, 1.2 * s.scale, c);
         }
-        Symbol::Oil => {
-            draw_circle(
-                p.x * s.scale,
-                (p.y + r * 0.30) * s.scale,
-                r * 0.69 * s.scale,
-                c,
-            );
-            let a = vec2(p.x, p.y - r * 1.2) * s.scale;
-            draw_triangle(
-                a,
-                vec2(p.x - r * 0.65, p.y + r * 0.30) * s.scale,
-                vec2(p.x + r * 0.65, p.y + r * 0.30) * s.scale,
-                c,
-            );
-        }
-        Symbol::Wood => {
-            line(vec2(0., -r), vec2(-r * 0.8, r * 0.5), 1.6);
-            line(vec2(0., -r), vec2(r * 0.8, r * 0.5), 1.6);
-            line(vec2(-r * 0.8, r * 0.5), vec2(r * 0.8, r * 0.5), 1.6);
-            line(vec2(0., r * 0.4), vec2(0., r), 1.6);
-        }
-        Symbol::Metal => {
-            line(vec2(-r, r * 0.65), vec2(-r * 0.5, -r * 0.45), 1.8);
-            line(vec2(-r * 0.5, -r * 0.45), vec2(r * 0.38, -r), 1.8);
-            line(vec2(r * 0.38, -r), vec2(r, r * 0.65), 1.8);
-            line(vec2(r, r * 0.65), vec2(-r, r * 0.65), 1.8);
-        }
-        Symbol::Powder => {
-            for (a, b) in [
-                (vec2(-r, 0.), vec2(r, 0.)),
-                (vec2(0., -r), vec2(0., r)),
-                (vec2(-r * 0.65, -r * 0.65), vec2(r * 0.65, r * 0.65)),
-            ] {
-                line(a, b, 1.7);
-            }
+        Symbol::Material(index) => {
+            material_symbol_scaled(s, index, p.x, p.y, r / 9., c);
         }
         Symbol::General => {
             s.border(p.x - r * 0.65, p.y - r * 0.65, r * 1.3, r * 1.3, c);
@@ -201,10 +166,11 @@ fn symbol(s: &Surface, p: Vec2, kind: Symbol, c: Color, r: f32, direction: f32) 
 }
 fn resource_symbol(kind: &str) -> Symbol {
     match kind {
-        "oil" | "oilwell" => Symbol::Oil,
-        "wood" | "sawmill" => Symbol::Wood,
-        "quarry" | "metal" => Symbol::Metal,
-        "powder" | "gunpowder" => Symbol::Powder,
+        "wood" | "sawmill" => Symbol::Material(0),
+        "metal" | "quarry" => Symbol::Material(1),
+        "oil" | "oilwell" => Symbol::Material(2),
+        "powder" | "gunpowder" => Symbol::Material(3),
+        "fuel" => Symbol::Material(4),
         "base" | "workyard" => Symbol::Factory,
         _ => Symbol::General,
     }
@@ -321,26 +287,12 @@ impl TacticalMap {
             self.zoom = (self.zoom / 1.5).max(1.);
         }
         let width = 1010.;
-        let height = 604.;
-        let x = (s.w - width) * 0.5;
-        let y = (s.h - height) * 0.5;
-        s.rect(0., 0., s.w, s.h, alpha(INK, 0.66));
-        s.rect(x, y, width, height, Color::new(0.069, 0.115, 0.132, 0.98));
-        s.border(x, y, width, height, EDGE);
-        s.rect(x, y, width, 2.5, GOLD);
-        s.text("КАРТА СЕКТОРА", x + 24., y + 31., 11., GOLD);
-        s.text(
-            "Сен-Лоран  /  Промышленная долина",
-            x + 23.,
-            y + 70.,
-            32.,
-            PAPER,
-        );
-        if s.button(x + width - 147., y + 20., 120., 31., "Закрыть   M", false) {
+        let (x, y) = s.panel(width, 620., "Сен-Лоран · Промышленная долина", "Тактическая карта");
+        if s.button(x + width - 147., y + 25., 120., 34., "Закрыть   M", false) {
             return true;
         }
         let world = self.max - self.min;
-        let available = Rect::new(x + 25., y + 99., 699., 447.);
+        let available = Rect::new(x + 37., y + 128., 578., 419.);
         let basis = (available.w / world.x).min(available.h / world.y);
         let rect = Rect::new(
             available.x + (available.w - world.x * basis) / 2.,
@@ -384,7 +336,7 @@ impl TacticalMap {
             scale,
             center,
         };
-        let terrain = Color::new(0.42, 0.48, 0.35, 1.);
+        let terrain = Color::from_rgba(82, 92, 77, 255);
         s.rect(rect.x, rect.y, rect.w, rect.h, terrain);
         for item in &self.ground {
             let center = proj.at(item.center);
@@ -398,13 +350,13 @@ impl TacticalMap {
                 "house" | "barn" | "ruin" | "tower" | "church" | "warehouse"
             );
             let color = if building {
-                Color::new(0.25, 0.29, 0.23, 0.93)
+                Color::from_rgba(45, 52, 49, 255)
             } else {
                 match item.kind.as_str() {
-                    "wheat" | "crop" | "grain" => Color::new(0.59, 0.57, 0.34, 0.8),
-                    "gravel" | "yard" => Color::new(0.56, 0.55, 0.44, 0.7),
-                    "forest" | "woods" => Color::new(0.28, 0.38, 0.27, 0.75),
-                    _ => Color::new(0.38, 0.45, 0.33, 0.8),
+                    "wheat" | "crop" | "grain" => Color::from_rgba(115, 113, 85, 255),
+                    "gravel" | "yard" => Color::from_rgba(114, 113, 97, 255),
+                    "forest" | "woods" => Color::from_rgba(61, 76, 61, 255),
+                    _ => Color::from_rgba(76, 87, 72, 255),
                 }
             };
             let corners = [vec2(-w, -h), vec2(w, -h), vec2(w, h), vec2(-w, h)]
@@ -413,8 +365,8 @@ impl TacticalMap {
             draw_triangle(corners[0], corners[2], corners[3], color);
         }
         for (ink, offset) in [
-            (Color::new(0.33, 0.33, 0.25, 1.), 1.6),
-            (Color::new(0.76, 0.72, 0.53, 1.), 0.),
+            (Color::from_rgba(62, 67, 58, 255), 1.6),
+            (Color::from_rgba(177, 175, 151, 255), 0.),
         ] {
             for road in &self.roads {
                 proj.line(
@@ -426,7 +378,7 @@ impl TacticalMap {
                 );
             }
         }
-        let grid = Color::new(0.83, 0.87, 0.67, 0.32);
+        let grid = alpha(PAPER, 0.25);
         for i in 0..=6 {
             let fx = self.min.x + world.x * i as f32 / 6.;
             let fy = self.min.y + world.y * i as f32 / 6.;
@@ -466,9 +418,9 @@ impl TacticalMap {
                     "Нефть" | "Древесина" | "Металл" | "Порох"
                 ));
             let tint = if is_named {
-                Color::new(0.14, 0.20, 0.17, 1.)
+                INK
             } else {
-                Color::new(0.96, 0.80, 0.44, 1.)
+                PAPER
             };
             if !is_named {
                 draw_circle(pt.x * s.scale, pt.y * s.scale, 4.4 * s.scale, INK);
@@ -503,7 +455,7 @@ impl TacticalMap {
                             box_.x + 2.,
                             box_.y + 11.5,
                             fs,
-                            if is_named { PAPER } else { GOLD },
+                            PAPER,
                         );
                         occupied.push(box_);
                         break;
@@ -511,23 +463,25 @@ impl TacticalMap {
                 }
             }
         }
-        let metal_color = Color::new(0.77, 0.94, 1., 1.);
+        let metal_color = BLUE_TEAM;
+        let mut hovered: Option<(&Mark, Vec2, f32)> = None;
         for deposit in &self.deposits {
             let pt = proj.at(deposit.center);
             if !proj.inside(pt, 7.) {
                 continue;
             }
             let metal = deposit.kind == "metal";
-            if !metal && self.zoom < 1.5 {
-                continue;
+            let distance = s.pointer.distance_squared(pt);
+            if distance < 10. * 10. && hovered.as_ref().map_or(true, |h| distance < h.2) {
+                hovered = Some((deposit, pt, distance));
             }
-            draw_circle(pt.x * s.scale, pt.y * s.scale, 6.6 * s.scale, INK);
+            draw_circle(pt.x * s.scale, pt.y * s.scale, 7. * s.scale, INK);
             symbol(
                 s,
                 pt,
                 resource_symbol(&deposit.kind),
-                if metal { metal_color } else { GOLD },
-                4.7,
+                if metal { metal_color } else { PAPER },
+                5.7,
                 0.,
             );
         }
@@ -547,7 +501,7 @@ impl TacticalMap {
             if !proj.inside(pt, 4.) {
                 continue;
             }
-            if string(prop, "kind", "") == "wall" {
+            if matches!(string(prop, "kind", ""), "wall" | "barricade") {
                 s.rect(pt.x - 2., pt.y - 1.4, 4., 2.8, BLUE_TEAM);
             }
         }
@@ -593,7 +547,7 @@ impl TacticalMap {
                 s.text(&name, pt.x + 9., pt.y + 3., 10., BLUE_TEAM);
             }
         }
-        let dronetint = Color::new(0.42, 0.95, 0.84, 1.);
+        let dronetint = BLUE_TEAM;
         for mark in state["markers"].as_array().into_iter().flatten() {
             let pt = proj.at(point(mark));
             if string(mark, "team", "") != team
@@ -629,56 +583,54 @@ impl TacticalMap {
                 number(local, "yaw", 0.) as f32,
             );
         }
-        s.border(rect.x, rect.y, rect.w, rect.h, EDGE);
-        let sx = x + 753.;
-        s.line(sx - 15., y + 91., sx - 15., y + 551., 1., EDGE);
-        s.text("УСЛОВНЫЕ ЗНАКИ", sx, y + 113., 12., GOLD);
-        for (i, (icon, title, color)) in [
-            (Symbol::SelfUnit, "Ты", GOLD),
-            (Symbol::Ally, "Союзник", BLUE_TEAM),
-            (Symbol::Vehicle, "Доступная техника", PAPER),
-            (Symbol::Drone, "Свой дрон", dronetint),
-            (Symbol::Marker, "Командная метка", GOLD),
-            (Symbol::Factory, "Своя постройка", BLUE_TEAM),
-            (Symbol::Oil, "Нефть", GOLD),
-            (Symbol::Wood, "Древесина", GOLD),
-            (Symbol::Metal, "Металл · склад или карьер", metal_color),
-            (Symbol::Powder, "Порох", GOLD),
-        ]
-        .iter()
-        .enumerate()
-        {
-            let by = y + 141. + i as f32 * 22.;
-            symbol(s, vec2(sx + 6., by - 4.), *icon, *color, 5., 0.);
-            s.text(title, sx + 24., by, 14., PAPER);
+        if let Some((site, pt, _)) = hovered {
+            let material = MATERIALS.iter().find(|(key, _)| *key == site.kind.as_str())
+                .map_or("Ресурс", |(_, name)| *name);
+            let detail = format!("{material}  ·  {:.0} м", own.distance(site.center));
+            let name = s.shorten(&site.name, 14., 248.);
+            let width = s.measure(&name, 14.).max(s.measure(&detail, 12.)) + 22.;
+            let left = (pt.x + 11.).clamp(rect.x + 2., rect.right() - width - 2.);
+            let top = (pt.y - 52.).clamp(rect.y + 2., rect.bottom() - 49.);
+            s.rect(left, top, width, 47., INK);
+            s.border(left, top, width, 47., EDGE);
+            s.text(&name, left + 10., top + 19., 14., PAPER);
+            s.text(&detail, left + 10., top + 37., 12., MUTED);
         }
-        s.text(
-            if own_drone.is_some() {
-                "СЕКТОР ДРОНА"
-            } else {
-                "ТВОЙ СЕКТОР"
-            },
-            sx,
-            y + 378.,
-            12.,
-            GOLD,
-        );
-        let col = ((own.x - self.min.x) / world.x * 6.).floor().clamp(0., 5.) as u8;
-        let row = ((own.y - self.min.y) / world.y * 6.).floor().clamp(0., 5.) as u8 + 1;
-        s.text(
-            &format!("{}{}", (b'A' + col) as char, row),
-            sx,
-            y + 418.,
-            32.,
-            PAPER,
-        );
-        s.text(
-            &format!("X {:0.0}   Z {:0.0}", own.x, own.y),
-            sx,
-            y + 443.,
-            13.,
-            MUTED,
-        );
+        s.border(rect.x, rect.y, rect.w, rect.h, EDGE);
+        let sx = x + 643.;
+        let right = x + width - 28.;
+        let sector = |pos: Vec2| {
+            let col = ((pos.x - self.min.x) / world.x * 6.).floor().clamp(0., 5.) as u8;
+            let row = ((pos.y - self.min.y) / world.y * 6.).floor().clamp(0., 5.) as u8 + 1;
+            format!("{}{}", (b'A' + col) as char, row)
+        };
+        s.line(sx - 20., y + 118., sx - 20., y + 548., 1., EDGE);
+        let sector_label = if own_drone.is_some() { "СЕКТОР ДРОНА" } else { "ТВОЙ СЕКТОР" };
+        s.text(sector_label, sx, y + 132., 12., MUTED);
+        s.bold().text(&sector(own), sx, y + 174., 35., PAPER);
+        s.right(&format!("X {:.0}   Z {:.0}", own.x, own.y), right, y + 169., 15., MUTED);
+        s.line(sx, y + 190., right, y + 190., 1., EDGE);
+        s.text("СОЮЗНИКИ И МЕТКИ", sx, y + 217., 12., MUTED);
+        for (i, (kind, label, tint)) in [
+            (Symbol::SelfUnit, "Ты", GOLD), (Symbol::Drone, "Дрон", dronetint),
+            (Symbol::Ally, "Союзник", BLUE_TEAM), (Symbol::Marker, "Метка", GOLD),
+            (Symbol::Vehicle, "Техника", PAPER), (Symbol::Factory, "Постройка", BLUE_TEAM),
+        ].into_iter().enumerate() {
+            let bx = sx + (i % 2) as f32 * 161.;
+            let by = y + 245. + (i / 2) as f32 * 27.;
+            symbol(s, vec2(bx + 8., by - 5.), kind, tint, 6., 0.);
+            s.text(label, bx + 25., by, 15., PAPER);
+        }
+        s.line(sx, y + 316., right, y + 316., 1., EDGE);
+        s.text("СНАБЖЕНИЕ", sx, y + 342., 12., MUTED);
+        for (i, (_, label)) in MATERIALS.iter().enumerate() {
+            let bx = sx + (i % 2) as f32 * 161.;
+            let by = y + 368. + (i / 2) as f32 * 24.;
+            let color = if i == 1 { metal_color } else { PAPER };
+            symbol(s, vec2(bx + 8., by - 5.), Symbol::Material(i), color, 7., 0.);
+            s.text(label, bx + 25., by, 15., PAPER);
+        }
+        s.line(sx, y + 435., right, y + 435., 1., EDGE);
         let mut metals = self
             .deposits
             .iter()
@@ -689,39 +641,17 @@ impl TacticalMap {
                 .distance_squared(own)
                 .total_cmp(&b.center.distance_squared(own))
         });
-        s.text("БЛИЖАЙШИЙ МЕТАЛЛ", sx, y + 477., 11., metal_color);
+        s.text("БЛИЖАЙШИЙ МЕТАЛЛ", sx, y + 460., 12., MUTED);
         for (i, site) in metals.iter().take(2).enumerate() {
-            let col = ((site.center.x - self.min.x) / world.x * 6.)
-                .floor()
-                .clamp(0., 5.) as u8;
-            let row = ((site.center.y - self.min.y) / world.y * 6.)
-                .floor()
-                .clamp(0., 5.) as u8
-                + 1;
-            s.text(
-                &format!(
-                    "{}{}   ·   {:.0} м",
-                    (b'A' + col) as char,
-                    row,
-                    own.distance(site.center)
-                ),
-                sx,
-                y + 496. + i as f32 * 33.,
-                13.,
-                PAPER,
-            );
-            s.text(
-                &s.shorten(&site.name, 11., 228.),
-                sx,
-                y + 509. + i as f32 * 33.,
-                11.,
-                MUTED,
-            );
+            let by = y + 488. + i as f32 * 34.;
+            s.text(&sector(site.center), sx, by, 16., metal_color);
+            s.text(&s.shorten(&site.name, 14., 222.), sx + 39., by, 14., PAPER);
+            s.right(&format!("{:.0} м", own.distance(site.center)), right, by, 15., PAPER);
         }
         let meters = if self.zoom > 2. { 25. } else { 50. };
         let bar = meters * scale;
         let bx = rect.x;
-        let by = y + 569.;
+        let by = y + 583.;
         s.line(bx, by, bx + bar, by, 1.5, MUTED);
         s.line(bx, by - 4., bx, by + 1., 1.5, MUTED);
         s.line(bx + bar, by - 4., bx + bar, by + 1., 1.5, MUTED);
@@ -732,16 +662,18 @@ impl TacticalMap {
             11.,
             MUTED,
         );
-        s.right(
-            &format!(
-                "Стрелки  сдвиг   ·   Home  к себе   ·   Колесо / + −  ×{:.1}",
-                self.zoom
-            ),
-            x + width - 25.,
-            by + 4.,
-            13.,
-            PAPER,
-        );
+        s.text("Стрелки  ·  сдвиг", x + 250., by + 5., 13., MUTED);
+        if s.button(x + 383., by - 16., 130., 33.,"К себе   Home", false) {
+            self.recenter();
+        }
+        s.text("Колесо  ·  масштаб", sx, by + 5., 13., MUTED);
+        if s.button(right - 165., by - 16., 42., 33., "−", false) {
+            self.zoom = (self.zoom / 1.5).max(1.);
+        }
+        s.mid(&format!("×{:.1}", self.zoom), right - 84., by + 5., 16., PAPER);
+        if s.button(right - 42., by - 16., 42., 33.,"+", false) {
+            self.zoom = (self.zoom * 1.5).min(4.5);
+        }
         false
     }
 }

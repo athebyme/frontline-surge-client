@@ -2,7 +2,7 @@
 //! Each quad remembers its cell and its neighbor. Removing a cell both makes a hole
 //! and exposes the cut faces behind it. Only that building's index buffers change.
 use super::{dead, in_frustum, mq, number, prop_model, Page, PageKind};
-use frontline_surge::fracture::{Cell, Layout, Material};
+use frontline_surge::fracture::{Cell, FractureState, Layout, Material};
 use macroquad::prelude::*;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -273,6 +273,7 @@ fn scar_geometry(
 }
 struct Building {
     parts: Vec<Part>,
+    cut_parts: Vec<Part>,
     scar_page: Option<Page>,
     scar_revision: u64,
     neighbors: Vec<[u16; 6]>,
@@ -489,6 +490,7 @@ impl Building {
         let (low, high) = world_bounds(model, size);
         Some(Self {
             parts,
+            cut_parts: Vec::new(),
             scar_page: None,
             scar_revision: 0,
             neighbors,
@@ -512,6 +514,10 @@ impl Building {
         }
         self.dead = gone;
         if self.revision != revision {
+            for part in self.cut_parts.drain(..) {
+                gpu.delete_buffer(part.page.vertices);
+                gpu.delete_buffer(part.page.indices);
+            }
             self.broken.fill(false);
             for id in prop["broken"]
                 .as_array()
@@ -522,6 +528,28 @@ impl Building {
                 if let Some(b) = self.broken.get_mut(id as usize) {
                     *b = true;
                 }
+            }
+            // Hide the original face and its attached facade trim. The surviving
+            // material gets exactly the reduced volume used by server collision.
+            let mut cuts = FractureState::default();
+            cuts.replace_cuts(prop["cuts"].as_array().into_iter().flatten()
+                .filter_map(|n| u32::try_from(n.as_u64()?).ok()));
+            let mut writer = Writer::new();
+            for code in cuts.packed_cuts() {
+                let id = (code >> 4) as u16;
+                let Some(cell) = self.cells.get(usize::from(id)) else { continue; };
+                if self.broken[usize::from(id)] { continue; }
+                self.broken[usize::from(id)] = true;
+                let reduced = cuts.clipped(id, *cell);
+                if writer.vertices.len() + 24 > VERTEX_LIMIT {
+                    self.cut_parts.push(upload_cut_part(&mut writer, gpu));
+                }
+                let tint = 0.88 + random(u32::from(id) + 153) * 0.15;
+                writer.cuboid(Vec3::from_array(reduced.center), Vec3::from_array(reduced.size),
+                    tone(mat_style(cell.material), tint), NONE);
+            }
+            if !writer.vertices.is_empty() {
+                self.cut_parts.push(upload_cut_part(&mut writer, gpu));
             }
             for part in &mut self.parts {
                 update_part(part, &self.broken, gpu);
@@ -557,7 +585,7 @@ impl Building {
         geometry_changed
     }
     fn release(&mut self, gpu: &mut dyn mq::RenderingBackend) {
-        for p in &self.parts {
+        for p in self.parts.iter().chain(&self.cut_parts) {
             gpu.delete_buffer(p.page.vertices);
             gpu.delete_buffer(p.page.indices);
         }
@@ -566,6 +594,11 @@ impl Building {
             gpu.delete_buffer(p.indices);
         }
     }
+}
+fn upload_cut_part(writer: &mut Writer, gpu: &mut dyn mq::RenderingBackend) -> Part {
+    let mut part = writer.upload(gpu);
+    update_part(&mut part, &[], gpu);
+    part
 }
 pub(super) fn barricade_template(size: Vec3, gpu: &mut dyn mq::RenderingBackend) -> Vec<Page> {
     let p = serde_json::json!({"kind":"barricade","w":size.x,"h":size.y,"d":size.z});
@@ -791,16 +824,34 @@ impl BreakableScenery {
             22
         };
         let step = ids.len().div_ceil(capacity).max(1);
-        for n in ids.iter().step_by(step) {
-            let Some(i) = n.as_u64() else { continue };
+        let broken = ids.iter().step_by(step).filter_map(|n| Some((n.as_u64()?, None)));
+        let chips = e["chips"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+        let chips = chips.iter().step_by(chips.len().div_ceil(12).max(1)).filter_map(|n| {
+            let code = n.as_u64()?;
+            let face = ((code & 15) / 2) as usize;
+            (face < 6).then_some((code >> 4, Some(face)))
+        });
+        for (i, cut_face) in broken.chain(chips) {
             let Some(c) = b.cells.get(i as usize) else {
                 continue;
             };
             let seed = (event_id as u32)
                 .wrapping_mul(313)
                 .wrapping_add(i as u32 * 97);
-            let pos = b.model.transform_point3(Vec3::from_array(c.center));
-            let kick = (pos - center).normalize_or_zero();
+            let mut local = Vec3::from_array(c.center);
+            let mut dims = Vec3::from_array(c.size);
+            let kick = if let Some(face) = cut_face {
+                let axis = face / 2;
+                let sign = if face % 2 == 0 { 1. } else { -1. };
+                local[axis] += sign * dims[axis] * 0.36;
+                dims[axis] *= 0.28;
+                let mut outward = Vec3::ZERO;
+                outward[axis] = sign;
+                b.model.transform_vector3(outward).normalize_or_zero()
+            } else {
+                (b.model.transform_point3(local) - center).normalize_or_zero()
+            };
+            let pos = b.model.transform_point3(local);
             let vel = kick * (1.5 + 3.5 * random(seed))
                 + vec3(
                     random(seed + 1) - 0.5,
@@ -812,7 +863,7 @@ impl BreakableScenery {
             } else {
                 0.47
             };
-            let size = Vec3::from_array(c.size) * fraction * (0.68 + 0.56 * random(seed + 4));
+            let size = dims * fraction * (0.68 + 0.56 * random(seed + 4));
             self.chunks.push(Chunk {
                 pos,
                 vel,
@@ -851,7 +902,7 @@ impl BreakableScenery {
             {
                 continue;
             }
-            for part in &b.parts {
+            for part in b.parts.iter().chain(&b.cut_parts) {
                 if part.page.count > 0 {
                     draw(&part.page, b.model, 1.);
                 }

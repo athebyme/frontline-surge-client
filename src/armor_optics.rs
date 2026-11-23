@@ -54,7 +54,13 @@ pub(super) fn draw(s: &Surface, camera: &Camera3D, player: &Value, vehicle: &Val
     } else {
         "БТР"
     };
-    let line = format!("{left}   {mode}   ·   СТАБ");
+    let zoom = number(player, "opticZoom", 1.);
+    let zoom_label = if (zoom - zoom.round()).abs() < 0.05 {
+        format!("{zoom:.0}×")
+    } else {
+        format!("{zoom:.1}×")
+    };
+    let line = format!("{left}   {mode}   ·   {zoom_label}   Z");
     let readout = format!(
         "{:03}°   {:.0} м",
         heading.round() as i32 % 360,

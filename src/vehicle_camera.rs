@@ -33,7 +33,7 @@ pub struct VehicleCamera {
     pub sensor: Sensor,
     zoom: f32,
     shown_zoom: f32,
-    exit_wheel: f32,
+    optic_stops: f32,
     turret: Option<(u64, f32)>,
 }
 impl Default for VehicleCamera {
@@ -43,7 +43,7 @@ impl Default for VehicleCamera {
             sensor: Sensor::Day,
             zoom: 1.,
             shown_zoom: 1.,
-            exit_wheel: 0.,
+            optic_stops: 0.,
             turret: None,
         }
     }
@@ -51,15 +51,22 @@ impl Default for VehicleCamera {
 impl VehicleCamera {
     pub fn toggle(&mut self) {
         self.onboard = !self.onboard;
-        self.exit_wheel = 0.;
+        self.optic_stops = 0.;
     }
-    pub fn scroll(&mut self, wheel: f32) {
+    pub fn magnification(&self) -> f32 {
+        self.optic_stops.max(0.).exp2()
+    }
+    pub fn cycle_magnification(&mut self) {
+        self.optic_stops = (self.optic_stops.max(0.).floor() + 1.) % 3.;
+    }
+    pub fn scroll(&mut self, wheel: f32, armored: bool) {
         if !wheel.is_finite() || wheel == 0. {
             return;
         }
         if self.onboard {
-            self.exit_wheel = (self.exit_wheel - wheel).clamp(0., 1.);
-            if self.exit_wheel >= 1. {
+            let ceiling = if armored { 2. } else { 0. };
+            self.optic_stops = (self.optic_stops + wheel).min(ceiling);
+            if self.optic_stops <= -1. {
                 self.toggle();
                 self.zoom = self.zoom.max(0.71);
             }
@@ -178,19 +185,24 @@ pub fn onboard(
     turret_yaw: f32,
     aim_yaw: f32,
     pitch: f32,
+    magnification: f32,
 ) -> (Vec3, Vec3, f32) {
     if let Some(mount) = GunMount::for_vehicle(kind) {
+        // The camera shares the MG axis at every distance. Switching triggers
+        // never shifts the image, including while zoomed or driving.
         let ray = mount
             .0
-            .ray(body.x, body.z, hull_yaw, turret_yaw, pitch, false);
+            .ray(body.x, body.z, hull_yaw, turret_yaw, pitch, true);
+        let half_angle = 29_f32.to_radians();
+        let fov = (2. * (half_angle.tan() / magnification).atan()).to_degrees();
         return (
             Vec3::from_array(ray.origin) + Vec3::Y * body.y,
             Vec3::from_array(ray.direction),
-            58.,
+            fov,
         );
     }
     let eye = match kind {
-        "scout_buggy" => vec3(0.29, 1.42, 0.53),
+        "scout_buggy" => Vec3::from_array(frontline_surge::buggy::EYE),
         "patrol4x4" => vec3(0.32, 1.73, 0.76),
         _ => vec3(0.43, 2.56, 1.72),
     };
@@ -274,23 +286,50 @@ mod tests {
     fn wheel_crosses_into_optics_and_small_reverse_noise_stays_inside() {
         let mut camera = VehicleCamera::default();
         for _ in 0..3 {
-            camera.scroll(1.);
+            camera.scroll(1., true);
         }
         assert!(!camera.onboard);
-        camera.scroll(1.);
+        camera.scroll(1., true);
         assert!(camera.onboard);
         for _ in 0..8 {
-            camera.scroll(-0.08);
-            camera.scroll(0.08);
+            camera.scroll(-0.08, true);
+            camera.scroll(0.08, true);
         }
         assert!(camera.onboard);
-        camera.scroll(-1.);
+        camera.scroll(-1., true);
         assert!(!camera.onboard);
-        camera.scroll(0.08);
+        camera.scroll(0.08, true);
         assert!(!camera.onboard);
         camera.toggle();
         assert!(camera.onboard);
         assert_eq!(Sensor::Day.next().next().next(), Sensor::Day);
+    }
+    #[test]
+    fn armored_zoom_scales_the_scene_and_centers_the_coax_at_all_ranges() {
+        let mut camera = VehicleCamera::default();
+        camera.toggle();
+        let body = vec3(3., 0., -18.);
+        let mount = Mount::for_kind("mbt").unwrap();
+        let ray = mount.ray(body.x, body.z, 0.7, -1.4, 0.2, true);
+        for expected in [1., 2., 4., 1.] {
+            assert_eq!(camera.magnification(), expected);
+            let (eye, axis, fov) = onboard("mbt", body, 0.7, -1.4, 0., 0.2, expected);
+            assert!((29_f32.to_radians().tan() / (fov.to_radians()*0.5).tan() - expected).abs() < 0.001);
+            for range in [1.5, 10., 179.] {
+                let point = Vec3::from_array(ray.origin) + Vec3::from_array(ray.direction)*range;
+                assert!((point-eye).normalize().distance(axis) < 0.00001);
+            }
+            camera.cycle_magnification();
+        }
+        camera.scroll(8., true);
+        assert_eq!(camera.magnification(), 4.);
+        for expected in [2., 1.] {
+            camera.scroll(-1., true);
+            assert!(camera.onboard);
+            assert_eq!(camera.magnification(), expected);
+        }
+        camera.scroll(-1., true);
+        assert!(!camera.onboard);
     }
     #[test]
     fn confirmation_stays_on_current_bore_and_never_pushes_past_cover() {
@@ -306,7 +345,7 @@ mod tests {
         // After translating and turning the chassis, a stabilized world heading
         // and pitch still map to the same image center on the optic.
         for (x, yaw) in [(0., 0.), (1., 0.5), (4., 3.13), (5., -3.12)] {
-            let (eye, axis, _) = onboard("mbt", vec3(x, 0., -x), yaw, 2.1, -1.9, -0.04);
+            let (eye, axis, _) = onboard("mbt", vec3(x, 0., -x), yaw, 2.1, -1.9, -0.04, 1.);
             assert!(eye.is_finite());
             assert!(axis.distance(crate::dir(2.1, -0.04)) < 0.0001);
         }
@@ -316,7 +355,7 @@ mod tests {
         let run = |wheel: f32, hz: u32| {
             let mut camera = VehicleCamera::default();
             for _ in 0..40 {
-                camera.scroll(wheel);
+                camera.scroll(wheel, true);
             }
             let mut dist = 0.;
             for _ in 0..hz {
@@ -332,7 +371,7 @@ mod tests {
     fn optic_axis_follows_the_articulated_barrel_even_across_hull_and_turret_turns() {
         for kind in ["mbt", "apc"] {
             for pitch in [-1., 0., 0.65] {
-                let (eye, look, _) = onboard(kind, vec3(9., 0., -2.), -1.5, 2.25, 0.8, pitch);
+                let (eye, look, _) = onboard(kind, vec3(9., 0., -2.), -1.5, 2.25, 0.8, pitch, 1.);
                 assert!(eye.is_finite());
                 assert!(
                     look.distance(super::super::dir(

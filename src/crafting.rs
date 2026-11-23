@@ -9,6 +9,7 @@ use fabrication_art::product;
 use serde_json::{json, Value};
 
 pub(super) struct CraftMenu {
+    pictures: fabrication_art::LoadoutPictures,
     tab: usize,
     pick: usize,
     station: Option<&'static str>,
@@ -271,13 +272,19 @@ fn product_id<'a>(r: &'a Recipe, state: &Value, p: &Value) -> &'a str {
         if string(p, "upgradeChoice", "mobility") == "mobility" {
             "mobility"
         } else {
-            "utility"
+            match friendly_vehicle(state, p).and_then(|v| v["kind"].as_str()) {
+                Some("cargo6x6" | "apc") => "cargo_rack",
+                Some("patrol4x4" | "scout_buggy") => "aux_fuel",
+                Some("mbt") => "armor",
+                _ => "service",
+            }
         }
-    } else if r.id == "ammo"
-        && !p["vehicleId"].is_null()
-        && friendly_vehicle(state, p).is_some_and(|v| count(v, "mgCapacity", 0) > 0)
-    {
-        "shells"
+    } else if r.id == "ammo" && !p["vehicleId"].is_null() {
+        match friendly_vehicle(state, p) {
+            Some(v) if v["kind"] == "mbt" || count(v, "shellCapacity", 0) > 0 => "shells",
+            Some(v) if count(v, "mgCapacity", 0) > 0 => "belt",
+            _ => r.id,
+        }
     } else {
         r.id
     }
@@ -492,6 +499,7 @@ pub(super) fn mode_name(id: &str) -> &'static str {
 impl CraftMenu {
     pub(super) fn new() -> Self {
         Self {
+            pictures: fabrication_art::LoadoutPictures::new(),
             tab: 0,
             pick: 0,
             station: None,
@@ -630,7 +638,7 @@ impl CraftMenu {
                 }
             }
         }
-        super::field_hud::weapon_picture(s, weapon, x + 37., y + 373., 2.6, PAPER);
+        self.pictures.draw(s, weapon, proposed, x + 28., y + 354.);
         let view = |v: f32| format!("{:.0}°", v);
         let pct = |v: f32| format!("{:.0}%", 100. * v);
         for (i, (label, old, new)) in [
@@ -948,6 +956,20 @@ mod tests {
         let fuel = changes(&recipes[0], &world, &p);
         assert_eq!((&fuel[0].from[..], &fuel[0].to[..]), ("30", "32"));
         assert_eq!((&fuel[1].from[..], &fuel[1].to[..]), ("6", "4"));
+    }
+    #[test]
+    fn workshop_picture_follows_vehicle_and_equipment_choice() {
+        let pilot = json!({"vehicleId":1,"team":"blue","upgradeChoice":"utility"});
+        let mut state = json!({"vehicles":[{"id":1,"team":"blue","kind":"mbt","mgCapacity":90}]});
+        let upgrade = &catalogue(2, &state, &pilot)[1];
+        let ammo = &catalogue(1, &state, &pilot)[1];
+        assert_eq!(product_id(upgrade, &state, &pilot), "armor");
+        assert_eq!(product_id(ammo, &state, &pilot), "shells");
+        state["vehicles"][0]["kind"] = json!("apc");
+        assert_eq!(product_id(upgrade, &state, &pilot), "cargo_rack");
+        assert_eq!(product_id(ammo, &state, &pilot), "belt");
+        state["vehicles"][0]["kind"] = json!("scout_buggy");
+        assert_eq!(product_id(upgrade, &state, &pilot), "aux_fuel");
     }
     #[test]
     fn crafting_respects_pack_and_allied_station() {

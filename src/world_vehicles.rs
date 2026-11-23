@@ -142,29 +142,16 @@ impl World {
     }
 }
 
-pub(super) fn draw_shells(state: Option<&Value>, eye: Vec3) {
+pub(super) fn draw_shells(state: Option<&Value>, eye: Vec3, motion: &crate::motion::Motion) {
     let Some(shells) = state.and_then(|s| s["shells"].as_array()) else {
         return;
     };
     for shell in shells {
-        let at = vec3(
-            number(shell, "x", 0.),
-            number(shell, "y", 1.),
-            number(shell, "z", 0.),
-        );
-        let velocity = vec3(
-            number(shell, "vx", 0.),
-            number(shell, "vy", 0.),
-            number(shell, "vz", 0.),
-        );
-        let dir = velocity.normalize_or_zero();
-        if dir.length_squared() < 0.5 {
-            continue;
+        let (tail, at) = motion.shell_trail(shell);
+        crate::actors::draw_streak(tail, at, eye, 0.10,
+            Color::from_rgba(244, 146, 57, 255));
+        if at.distance_squared(tail) < 0.01 {
+            draw_cube(at, Vec3::splat(0.10), None, Color::from_rgba(255, 235, 177, 255));
         }
-        let cross = dir.cross(eye - at).normalize_or_zero() * 0.052;
-        let tail = at - dir * (velocity.length() * 0.045).clamp(0.6, 2.8);
-        draw_line_3d(tail, at, Color::from_rgba(246, 171, 89, 246));
-        draw_line_3d(at - cross, at + cross, Color::from_rgba(255, 223, 161, 255));
-        draw_sphere(at, 0.066, None, Color::from_rgba(255, 235, 188, 255));
     }
 }

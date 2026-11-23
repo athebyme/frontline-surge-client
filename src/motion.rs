@@ -72,6 +72,7 @@ struct Frame {
     players: Poses,
     vehicles: Poses,
     drones: Poses,
+    shells: Poses,
 }
 impl Frame {
     fn read(state: &Value, at: f64) -> Self {
@@ -88,6 +89,7 @@ impl Frame {
             players: group("players"),
             vehicles: group("vehicles"),
             drones: group("drones"),
+            shells: group("shells"),
         }
     }
 }
@@ -133,6 +135,9 @@ impl Motion {
         }
     }
     fn sample(&self, v: &Value, group: fn(&Frame) -> &Poses, jump: f32) -> Pose {
+        self.sample_at(v, group, jump, self.cursor)
+    }
+    fn sample_at(&self, v: &Value, group: fn(&Frame) -> &Poses, jump: f32, at: f64) -> Pose {
         let Some(id) = v["id"].as_u64() else {
             return Pose::read(v);
         };
@@ -148,8 +153,8 @@ impl Motion {
             if !behind.continuous(ahead, jump) {
                 break;
             }
-            if frame.at <= self.cursor {
-                let t = ((self.cursor - frame.at) / (end - frame.at)).clamp(0., 1.) as f32;
+            if frame.at <= at {
+                let t = ((at - frame.at) / (end - frame.at)).clamp(0., 1.) as f32;
                 return behind.between(ahead, t);
             }
             ahead = behind;
@@ -169,6 +174,12 @@ impl Motion {
     }
     pub fn drone(&self, v: &Value) -> Pose {
         self.sample(v, |f| &f.drones, 9.)
+    }
+    pub fn shell_trail(&self, v: &Value) -> (Vec3, Vec3) {
+        // Start at the first observed position. Never project a new tail behind the barrel.
+        let group: fn(&Frame) -> &Poses = |f| &f.shells;
+        (self.sample_at(v, group, f32::INFINITY, self.cursor - 0.038).position,
+            self.sample(v, group, f32::INFINITY).position)
     }
 }
 
@@ -199,6 +210,24 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn shell_trail_moves_between_confirmations_and_never_starts_behind_launch() {
+        let mut motion = Motion::default();
+        let shell = |x| json!({"id":5, "x":x, "y":2., "z":0., "vehicleId":27});
+        for (t,x) in [(0.,0.), (0.05,8.), (0.1,16.)] {
+            motion.receive(&json!({"elapsed":t,"round":1,"shells":[shell(x)]}));
+        }
+        let value = shell(16.);
+        motion.cursor = 0.015;
+        let (tail, head) = motion.shell_trail(&value);
+        assert_eq!(tail.x, 0.);
+        assert!((head.x - 2.4).abs() < 0.00001);
+        motion.cursor = 0.07;
+        let (tail, head) = motion.shell_trail(&value);
+        assert!(tail.x > 0. && tail.x < head.x && head.x < 16.);
+        motion.advance(2.);
+        assert_eq!(motion.shell_trail(&value).1.x, 16.);
+    }
     // Same 100 Hz camera sweep and walk, same 20 Hz server samples.
     #[test]
     fn frame_pacing_at_100_fps_with_20_hz_snapshots() {

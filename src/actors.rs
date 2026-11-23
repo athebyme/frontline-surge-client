@@ -1,6 +1,9 @@
 //! Native first-person arms, articulated infantry and short-lived match effects.
 #[path = "actor_pose.rs"]
 mod pose;
+#[path = "blast_fx.rs"]
+mod blast_fx;
+use blast_fx::{Burst, BurstKind};
 use macroquad::camera::Camera;
 use macroquad::prelude::*;
 use pose::{arm_pose, ReloadPose};
@@ -355,11 +358,8 @@ fn reload_phase(p: &Value, snapshot_age: f32) -> f32 {
     }
 }
 
-fn draw_remote(rig: &Rig, r: &Remote, p: &Value, friend: bool, snapshot_age: f32) {
-    if r.down >= 0.99 || seated(p) {
-        return;
-    }
-    let parts = if friend {
+fn uniform(friend: bool) -> [&'static str; 9] {
+    if friend {
         [
             "a/torso",
             "a/head",
@@ -383,7 +383,42 @@ fn draw_remote(rig: &Rig, r: &Remote, p: &Value, friend: bool, snapshot_age: f32
             "e/hip",
             "e/shin",
         ]
-    };
+    }
+}
+
+fn draw_buggy_driver(rig: &Rig, pose: crate::motion::Pose, friend: bool, camera: Vec3) {
+    use frontline_surge::buggy::{EYE, SEAT};
+    let parts = uniform(friend);
+    let chassis = translate(pose.position) * ry(std::f32::consts::PI - pose.yaw);
+    // The infantry rig faces -Z, while the authored vehicle faces +Z.
+    let body = chassis * translate(Vec3::from_array(SEAT)) * ry(std::f32::consts::PI)
+        * Mat4::from_scale(Vec3::splat(0.76)) * translate(vec3(0., -0.92, 0.));
+    rig.draw(parts[0], body);
+    let eye = chassis.transform_point3(Vec3::from_array(EYE));
+    if eye.distance_squared(camera) > 0.075 {
+        rig.draw(parts[1], body);
+    }
+    let shoulders = body * translate(vec3(0., 1.325, 0.));
+    for (left, upper, lower, wrist) in [
+        (true, parts[2], parts[3], vec3(-0.061, -0.047, -0.431)),
+        (false, parts[4], parts[5], vec3(0.090, -0.057, -0.246)),
+    ] {
+        let side = if left { -1. } else { 1. };
+        let wheel = vec3(side * 0.20, -0.07 + side * pose.steering * 0.05, -0.41);
+        let (arm, forearm) = arm_pose(left, wheel - wrist, 0.);
+        rig.draw(upper, shoulders * arm);
+        rig.draw(lower, shoulders * forearm);
+        let thigh = body * translate(vec3(side * 0.121, 0.92, 0.)) * rx(1.33);
+        rig.draw(parts[7], thigh);
+        rig.draw(parts[8], thigh * translate(vec3(0., -0.421, 0.)) * rx(-1.62));
+    }
+}
+
+fn draw_remote(rig: &Rig, r: &Remote, p: &Value, friend: bool, snapshot_age: f32) {
+    if r.down >= 0.99 {
+        return;
+    }
+    let parts = uniform(friend);
     let sway = r.phase.sin() * r.movement;
     let step_height = (0.5 - 0.5 * (2. * r.phase).cos()) * r.movement;
     let fall = smooth(r.down / 0.77);
@@ -474,13 +509,6 @@ fn draw_remote(rig: &Rig, r: &Remote, p: &Value, friend: bool, snapshot_age: f32
                 * rx(-0.68 * recovery * recovery - 0.04 * r.movement),
         );
     }
-}
-
-struct Burst {
-    origin: Vec3,
-    age: f32,
-    scale: f32,
-    seed: f32,
 }
 
 /// A soft textured billboard written once. Transparent edges blend into the map;
@@ -593,11 +621,43 @@ impl VehicleFlash {
 }
 
 struct Tracer {
-    a: Vec3,
-    b: Vec3,
-    life: f32,
+    start: Vec3,
+    end: Vec3,
+    age: f32,
+    duration: f32,
     width: f32,
     color: Color,
+}
+impl Tracer {
+    fn segment(&self) -> (Vec3, Vec3) {
+        let path = self.end - self.start;
+        let len = path.length();
+        let dir = path / len;
+        let streak = (len * 0.16).clamp(0.16, 8.).min(len);
+        let head = streak + (len - streak) * (self.age / self.duration).clamp(0., 1.);
+        (self.start + dir * (head - streak), self.start + dir * head)
+    }
+}
+
+/// A depth-tested streak with a visible end-on profile in the driver's sight.
+pub(crate) fn draw_streak(tail: Vec3, head: Vec3, eye: Vec3, width: f32, color: Color) {
+    let span = head - tail;
+    let length = span.length();
+    if length < 0.001 {
+        return;
+    }
+    let center = (head + tail) * 0.5;
+    let width = width.max((center.distance(eye) * 0.0016).min(0.24));
+    let orient = Quat::from_rotation_arc(Vec3::Y, span / length);
+    with_transform(Mat4::from_rotation_translation(orient, center), || {
+        draw_cube(Vec3::ZERO, vec3(width, length, width), None, color);
+        draw_cube(
+            vec3(0., length * 0.34, 0.),
+            vec3(width * 1.42, length * 0.30, width * 1.42),
+            None,
+            Color::from_rgba(255, 236, 183, 255),
+        );
+    });
 }
 struct Chip {
     pos: Vec3,
@@ -643,6 +703,7 @@ pub struct Actors {
     tracers: Vec<Tracer>,
     chips: Vec<Chip>,
     bursts: Vec<Burst>,
+    blast_ribbons: Mesh,
     vehicle_flashes: Vec<VehicleFlash>,
     smoke: Mesh,
     grenade_positions: HashMap<u64, Vec3>,
@@ -663,6 +724,11 @@ impl Actors {
             tracers: Vec::new(),
             chips: Vec::new(),
             bursts: Vec::with_capacity(8),
+            blast_ribbons: Mesh {
+                vertices: Vec::with_capacity(140),
+                indices: Vec::with_capacity(430),
+                texture: None,
+            },
             vehicle_flashes: Vec::with_capacity(4),
             smoke: smoke_disc(),
             grenade_positions: HashMap::new(),
@@ -704,6 +770,7 @@ impl Actors {
         local: &Value,
         dt: f32,
         motion: &crate::motion::Motion,
+        camera: Vec3,
     ) {
         let dt = dt.clamp(0., 0.12);
         let round = state["round"].as_i64();
@@ -718,6 +785,15 @@ impl Actors {
             self.remote
                 .retain(|id, _| list.iter().any(|p| id_of(p) == *id));
             for p in list {
+                if let Some(id) = p["vehicleId"].as_u64() {
+                    let buggy = state["vehicles"].as_array().and_then(|vs| vs.iter().find(|v|
+                        v["id"].as_u64() == Some(id) && v["kind"] == "scout_buggy"
+                        && v["driver"] == p["id"] && v["destroyed"] != true));
+                    if let Some(v) = buggy.filter(|_| alive(p)) {
+                        draw_buggy_driver(&self.rig, motion.vehicle(v), p["team"] == local["team"], camera);
+                    }
+                    continue;
+                }
                 if id_of(p) == uid
                     && !local["droneId"].is_number()
                     && local["freeCamera"].as_bool() != Some(true)
@@ -763,22 +839,25 @@ impl Actors {
             else {
                 return false;
             };
-            if let Some(transform) = flash.transform(v, state, motion) {
-                let scale = if flash.cannon { 3.1 } else { 1.65 };
-                self.rig.draw(
-                    "flash",
-                    transform * rz(flash.remaining * 36.) * Mat4::from_scale(Vec3::splat(scale)),
-                );
+            if motion.optic_vehicle != Some(flash.vehicle) {
+                if let Some(transform) = flash.transform(v, state, motion) {
+                    let scale = if flash.cannon { 3.1 } else { 1.65 };
+                    self.rig.draw(
+                        "flash",
+                        transform * rz(flash.remaining * 36.) * Mat4::from_scale(Vec3::splat(scale)),
+                    );
+                }
             }
             flash.remaining -= dt;
             flash.remaining > 0.
         });
-        self.draw_effects(dt);
-        self.draw_bursts(pos(local) + Vec3::Y * 1.67, dt);
+        self.draw_effects(dt, camera);
+        self.draw_bursts(camera, dt);
     }
     fn event(&mut self, e: &Value, uid: u64, state: &Value, motion: &crate::motion::Motion) {
         let cannon = e["type"] == "tankFire";
         let mounted_mg = e["type"] == "shot" && e["weapon"] == "vehicle_mg";
+        let mut drawn_muzzle = None;
         if cannon || mounted_mg {
             if let Some(v) = state["vehicles"].as_array().and_then(|list| {
                 list.iter().find(|v| {
@@ -794,8 +873,11 @@ impl Actors {
                 };
                 if cannon {
                     if let Some(muzzle) = flash.transform(v, state, motion) {
-                        self.add_burst(muzzle.transform_point3(Vec3::ZERO), 0.52);
+                        self.add_burst(muzzle.transform_point3(Vec3::ZERO), 0.52, BurstKind::Muzzle);
                     }
+                } else {
+                    drawn_muzzle = flash.transform(v, state, motion)
+                        .map(|pose| pose.transform_point3(Vec3::ZERO));
                 }
                 self.vehicle_flashes.push(flash);
             }
@@ -812,28 +894,49 @@ impl Actors {
                 let dist = delta.length();
                 let tank = matches!(e["weapon"].as_str(), Some("tank" | "mbt"));
                 if dist > 0.55 {
-                    let len = (dist * 0.71).min(if tank { 8.4 } else { 4.1 });
-                    self.tracers.push(Tracer {
-                        a: b - delta / dist * len,
-                        b,
-                        life: if tank { 0.105 } else { 0.065 },
-                        width: if tank { 0.055 } else { 0.017 },
-                        color: if mine {
-                            Color::from_rgba(255, 211, 133, 255)
-                        } else {
-                            Color::from_rgba(250, 165, 101, 255)
-                        },
-                    });
+                    let dir = delta / dist;
+                    let start = drawn_muzzle.unwrap_or(a + dir * (dist * 0.2).min(1.2));
+                    // Cover inside the barrel still receives the server impact.
+                    // A visible tracer can only travel forward from the muzzle.
+                    if (b - start).dot(dir) > 0.1 {
+                        self.tracers.push(Tracer {
+                            start,
+                            end: b,
+                            age: 0.,
+                            duration: (start.distance(b) / 750.).clamp(0.055, 0.16),
+                            width: if mounted_mg { 0.044 } else { 0.026 },
+                            color: if mine {
+                                Color::from_rgba(244, 164, 77, 255)
+                            } else {
+                                Color::from_rgba(243, 133, 70, 255)
+                            },
+                        });
+                    }
                 }
                 if let Some(material) = e["impactMaterial"].as_str() {
                     self.scatter(b, material, true);
                     if tank {
-                        self.add_burst(b, 0.67);
+                        self.add_burst(b, 0.67, BurstKind::Impact);
                     }
                 }
             }
             "shellImpact" => {
                 let hit = pos(e);
+                // A nearby shell can launch and hit between network snapshots.
+                // Draw its final confirmed segment even in that case.
+                if let Ok(origin) = serde_json::from_value::<[f32; 3]>(e["trailFrom"].clone()) {
+                    let start = Vec3::from_array(origin);
+                    if start.distance_squared(hit) > 0.01 {
+                        self.tracers.push(Tracer {
+                            start,
+                            end: hit,
+                            age: 0.,
+                            duration: 0.040,
+                            width: 0.10,
+                            color: Color::from_rgba(244, 146, 57, 255),
+                        });
+                    }
+                }
                 self.impact_burst(
                     hit,
                     e["impactMaterial"].as_str().unwrap_or("earth"),
@@ -855,8 +958,16 @@ impl Actors {
                     Some("house" | "barn" | "ruin" | "wall" | "barricade")
                 ) =>
             {
+                let wreck = vec3(num(e, "ex", 0.), 0.76, num(e, "ez", 0.));
+                if e["vehicleId"].is_number() {
+                    // A killing shell has already flashed on the hull. In that case
+                    // just vent a column of smoke from the disabled vehicle.
+                    let flash = !self.bursts.iter().any(|b| b.kind == BurstKind::Impact
+                        && b.age < 0.20 && b.origin.distance_squared(wreck) < 20.25);
+                    self.add_burst(wreck, 0.75, BurstKind::Wreck { flash });
+                }
                 self.scatter(
-                    vec3(num(e, "ex", 0.), 0.58, num(e, "ez", 0.)),
+                    wreck,
                     e["kind"].as_str().unwrap_or("stone"),
                     false,
                 );
@@ -865,7 +976,7 @@ impl Actors {
         }
     }
     fn impact_burst(&mut self, at: Vec3, material: &str, scale: f32) {
-        self.add_burst(at, scale);
+        self.add_burst(at, scale, BurstKind::Impact);
         self.scatter(at + Vec3::Y * 0.06, material, false);
     }
     fn scatter(&mut self, origin: Vec3, material: &str, impact: bool) {
@@ -967,7 +1078,7 @@ impl Actors {
             });
         }
     }
-    fn add_burst(&mut self, origin: Vec3, scale: f32) {
+    fn add_burst(&mut self, origin: Vec3, scale: f32, kind: BurstKind) {
         if self.bursts.len() >= 10 {
             self.bursts.remove(0);
         }
@@ -976,87 +1087,27 @@ impl Actors {
             age: 0.,
             scale,
             seed: self.rng.range(0., TAU),
+            kind,
         });
     }
     fn draw_bursts(&mut self, eye: Vec3, dt: f32) {
-        self.bursts.retain(|b| b.age < 0.89);
+        self.bursts.retain(|b| b.age < b.duration());
         self.bursts.sort_by(|a, b| {
-            b.origin
-                .distance_squared(eye)
-                .total_cmp(&a.origin.distance_squared(eye))
+            b.origin.distance_squared(eye).total_cmp(&a.origin.distance_squared(eye))
         });
         for b in &mut self.bursts {
-            let t = b.age;
+            if b.origin.distance_squared(eye) < 220. * 220. {
+                b.draw(eye, &mut self.smoke, &mut self.blast_ribbons, self.rig.thermal);
+            }
             b.age += dt;
-            if b.origin.distance_squared(eye) > 185. * 185. {
-                continue;
-            }
-            let view = (eye - b.origin).normalize_or_zero();
-            let mut right = Vec3::Y.cross(view).normalize_or_zero();
-            if right.length_squared() < 0.1 {
-                right = Vec3::X;
-            }
-            let up = view.cross(right).normalize_or_zero();
-            for j in 0..6 {
-                let a = j as f32 * 2.39996 + b.seed;
-                let span = b.scale * (0.19 + 1.18 * t);
-                let at = b.origin
-                    + vec3(
-                        a.cos() * span,
-                        (0.22 + 0.10 * (j % 3) as f32 + t * 1.12) * b.scale,
-                        a.sin() * span,
-                    );
-                let alpha = 0.66 * (1. - smooth(t / 0.87));
-                let dark = 0.30 + 0.078 * (j % 3) as f32;
-                smoke_puff(
-                    &mut self.smoke,
-                    at,
-                    right,
-                    up,
-                    b.scale * (0.44 + 0.72 * t),
-                    Color::new(dark + 0.075, dark + 0.059, dark + 0.01, alpha),
-                );
-            }
-            if t < 0.16 {
-                let strength = 1. - t / 0.16;
-                let front = b.origin + Vec3::Y * (0.25 * b.scale) + view * (0.35 * b.scale);
-                smoke_puff(
-                    &mut self.smoke,
-                    front,
-                    right,
-                    up,
-                    b.scale * (0.48 + 0.98 * strength),
-                    Color::new(1., 0.59, 0.22, 0.97 * strength),
-                );
-                smoke_puff(
-                    &mut self.smoke,
-                    front + view * 0.02,
-                    right,
-                    up,
-                    b.scale * (0.20 + 0.49 * strength),
-                    Color::new(1., 0.93, 0.70, strength),
-                );
-            }
         }
     }
-    fn draw_effects(&mut self, dt: f32) {
+    fn draw_effects(&mut self, dt: f32, camera: Vec3) {
         self.tracers.retain_mut(|t| {
-            if t.life <= 0. {
-                return false;
-            }
-            let span = t.b - t.a;
-            let q = Quat::from_rotation_arc(Vec3::Y, span.normalize());
-            let transform = Mat4::from_rotation_translation(q, (t.a + t.b) * 0.5);
-            with_transform(transform, || {
-                draw_cube(
-                    Vec3::ZERO,
-                    vec3(t.width, span.length(), t.width),
-                    None,
-                    t.color,
-                )
-            });
-            t.life -= dt;
-            true
+            t.age = (t.age + dt).min(t.duration);
+            let (tail, head) = t.segment();
+            draw_streak(tail, head, camera, t.width, t.color);
+            t.age < t.duration
         });
         self.chips.retain_mut(|p| {
             p.life -= dt;

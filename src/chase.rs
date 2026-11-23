@@ -137,9 +137,12 @@ impl MapDamage {
         self.dead = v["dead"] == true;
         let revision = v["revision"].as_u64().unwrap_or(0) as u32;
         let broken = v["broken"].as_array();
+        let cuts = || v["cuts"].as_array().into_iter().flatten()
+            .filter_map(|n| u32::try_from(n.as_u64()?).ok());
         // Full lists also handle joining a different match with the same round,
         // slot and revision. The reliable wire list contains sorted cell IDs.
         if revision == self.fracture.revision
+            && self.fracture.packed_cuts().eq(cuts())
             && self.fracture.broken.len() == broken.map_or(0, Vec::len)
             && self
                 .fracture
@@ -152,6 +155,7 @@ impl MapDamage {
             return;
         }
         self.fracture.revision = revision;
+        self.fracture.replace_cuts(cuts());
         self.fracture.broken.clear();
         self.fracture.broken.extend(
             broken
@@ -302,6 +306,16 @@ impl Scene {
             if driver["vehicleId"] == v["id"] || driver["id"] == v["driver"] {
                 continue;
             }
+            let pose = motion.vehicle(v);
+            if v["kind"] == "scout_buggy" && v["destroyed"] != true {
+                let ray = frontline_surge::buggy::SightLine::new(pose.position.x, pose.position.z,
+                    pose.yaw, (origin - Vec3::Y * pose.position.y).to_array(), dir.to_array());
+                if let Some(t) = ray.hull(best) { best = t; }
+                if v["driver"].is_number() {
+                    if let Some(t) = ray.driver(best) { best = t; }
+                }
+                continue;
+            }
             let mut size = match v["kind"].as_str() {
                 Some("scout_buggy") => vec3(1.75, 1.45, 3.3),
                 Some("apc") => vec3(2.8, 2.35, 5.45),
@@ -312,7 +326,6 @@ impl Scene {
             if v["destroyed"] == true {
                 size.y *= 0.58;
             }
-            let pose = motion.vehicle(v);
             let hull = Hull::new(pose.position, size, pose.yaw);
             if let Some((_, _, t)) = hull.local_segment(origin, dir, best) {
                 best = t;

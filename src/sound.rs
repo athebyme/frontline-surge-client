@@ -77,6 +77,15 @@ struct Trigger {
     priority: u8,
     distance: f32,
     offset: f32,
+    arrival_delay: f32,
+    armored: bool,
+}
+
+impl Cue {
+    fn report(self) -> bool {
+        matches!(self, Self::Shot | Self::Distant | Self::Patrol | Self::Smg | Self::Cannon
+            | Self::Apc | Self::Mounted | Self::ShellBlast | Self::Blast)
+    }
 }
 
 // The sample worker tracks the loudest nearby occupied vehicles. Audio rate is
@@ -365,7 +374,12 @@ impl Sound {
         }) else {
             return;
         };
-        let ear = serde_json::json!({"id":local_id,"team":me["team"],"x":listener.0,"y":listener.1,"z":listener.2,"yaw":listener.3});
+        let armored = me["vehicleId"].as_u64().is_some_and(|id| {
+            state["vehicles"].as_array().into_iter().flatten().any(|v| {
+                v["id"].as_u64() == Some(id) && matches!(v["kind"].as_str(), Some("mbt" | "apc"))
+            })
+        });
+        let ear = serde_json::json!({"id":local_id,"team":me["team"],"x":listener.0,"y":listener.1,"z":listener.2,"yaw":listener.3,"armored":armored});
         let footsteps = self.steps.advance(state, &ear, local_id);
         for effect in self
             .stations
@@ -395,13 +409,18 @@ impl Sound {
             if id <= cursor || time - event["at"].as_f64().unwrap_or(time) > 0.40 {
                 continue;
             }
-            for trigger in [
+            for mut trigger in [
                 from_event(event, &ear, local_id),
                 detail(event, &ear, local_id, time),
             ]
             .into_iter()
             .flatten()
             {
+                if trigger.cue.report() && trigger.distance > 0. {
+                    // Subtract the time already spent between snapshot and event.
+                    let age = (time-event["at"].as_f64().unwrap_or(time)).max(0.) as f32;
+                    trigger.arrival_delay = (trigger.distance / 340. - age).max(0.);
+                }
                 self.last_cue[trigger.cue as usize] = time;
                 #[cfg(target_os = "windows")]
                 self.output.enqueue(trigger);
@@ -552,6 +571,8 @@ fn place(cue: Cue, dx: f32, dz: f32, me: &Value, centered: bool) -> Option<Trigg
         priority,
         distance: if centered { 0. } else { distance },
         offset: 0.,
+        arrival_delay: 0.,
+        armored: me["armored"].as_bool().unwrap_or(false),
     })
 }
 

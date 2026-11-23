@@ -1,17 +1,16 @@
 //! In-world sight markings, kit silhouettes and the match roster.
 use super::*;
-const WHITE_HUD: Color = Color::new(0.97, 0.98, 0.94, 1.);
-const DIM: Color = Color::new(0.81, 0.86, 0.84, 1.);
-const SKY_BLUE: Color = Color::new(0.52, 0.88, 1., 1.);
-const CORAL: Color = Color::new(1., 0.55, 0.40, 1.);
-const AMBER: Color = Color::new(1., 0.81, 0.35, 1.);
-const PHOSPHOR: Color = Color::new(0.60, 1., 0.79, 1.);
-const SHADOW: Color = Color::new(0.023, 0.040, 0.047, 0.90);
+const WHITE_HUD: Color = PAPER;
+const DIM: Color = Color::new(0.76, 0.78, 0.72, 1.);
+const SKY_BLUE: Color = BLUE_TEAM;
+const CORAL: Color = RED_TEAM;
+const AMBER: Color = GOLD;
+const PHOSPHOR: Color = Color::new(0.67, 0.81, 0.66, 1.);
+const SHADOW: Color = Color::new(0.026, 0.035, 0.030, 0.93);
 
 impl Surface<'_> {
     pub(super) fn ink(&self, text: &str, x: f32, y: f32, size: f32, color: Color) {
-        self.text(text, x + 0.8, y + 1.5, size, SHADOW);
-        self.text(text, x - 0.55, y - 0.25, size, alpha(SHADOW, 0.60));
+        self.text(text, x + 0.7, y + 1.1, size, SHADOW);
         self.text(text, x, y, size, color);
     }
     pub(super) fn ink_right(&self, text: &str, x: f32, y: f32, size: f32, color: Color) {
@@ -38,6 +37,7 @@ enum Mark {
     Grenade,
     Shell,
     Hull,
+    Armor,
     Carrier,
     Truck,
     Buggy,
@@ -55,11 +55,13 @@ enum Mark {
     Smg,
 }
 fn icon(s: &Surface, mark: Mark, x: f32, y: f32, k: f32, c: Color) {
-    // The same block silhouettes serve as kit, ammunition and status identifiers.
-    for (d, color) in [(1.2, SHADOW), (0., c)] {
+    for (d, color) in [(0.8, SHADOW), (0., c)] {
         let face = |points: &[(f32, f32)]| s.face(points, x + d, y + d, k, color);
         let bar = |px: f32, py: f32, w: f32, h: f32| {
             s.rect(x + d + px * k, y + d + py * k, w * k, h * k, color)
+        };
+        let cut = |ax: f32, ay: f32, bx: f32, by: f32, width: f32| {
+            s.line(x + d + ax * k, y + d + ay * k, x + d + bx * k, y + d + by * k, width * k, INK);
         };
         match mark {
             Mark::Cross => {
@@ -89,11 +91,20 @@ fn icon(s: &Surface, mark: Mark, x: f32, y: f32, k: f32, c: Color) {
                 bar(0., 11., w, 5.);
             }
             Mark::Hull => {
-                face(&[(0., 9.), (20., 9.), (17., 14.), (3., 14.)]);
-                face(&[(1., 8.), (4., 6.8), (16., 6.8), (19., 8.)]);
-                face(&[(4., 6.2), (6., 2.3), (12., 2.3), (15., 6.2)]);
-                bar(12., 3., 10., 1.7);
-                bar(20., 2.5, 3., 2.6);
+                // Low turret, long tube and a single track run survive at feed size.
+                face(&[(0., 7.3), (14., 7.3), (20., 9.), (16.4, 11.4), (2.2, 11.4)]);
+                face(&[(3., 6.8), (4.5, 3.8), (8.5, 2.8), (11.8, 3.), (14.3, 5.8), (12., 6.8)]);
+                bar(12., 4., 12., 1.15);
+                face(&[(0.7, 11.6), (18.8, 11.6), (15.7, 14.), (3., 14.)]);
+                for axle in [4., 7.5, 11., 14.5] {
+                    cut(axle, 12.2, axle + 0.75, 12.2, 1.);
+                }
+            }
+            Mark::Armor => {
+                face(&[(0., 2.5), (8., 0.), (16., 2.5), (14., 9.), (8., 14.), (2., 9.)]);
+                cut(3., 4., 8., 2.6, 1.);
+                cut(8., 2.6, 13., 4., 1.);
+                cut(8., 3., 8., 10.7, 1.);
             }
             Mark::Carrier | Mark::Truck | Mark::Patrol | Mark::Buggy => {
                 if matches!(mark, Mark::Carrier) {
@@ -168,20 +179,14 @@ fn icon(s: &Surface, mark: Mark, x: f32, y: f32, k: f32, c: Color) {
                 ]);
             }
             Mark::MachineGun => {
-                face(&[
-                    (0., 5.),
-                    (4., 6.),
-                    (7., 4.),
-                    (17., 4.),
-                    (17., 9.),
-                    (5., 9.),
-                    (0., 11.),
-                ]);
-                bar(17., 5., 10., 2.);
-                bar(26., 4.5, 3., 3.);
-                bar(9., 10., 5., 4.);
-                bar(9., 2., 6., 1.5);
-                face(&[(19., 7.), (20., 7.), (23., 12.), (21., 12.)]);
+                face(&[(0., 6.8), (7., 5.5), (8.5, 7.), (3.1, 8.7), (0.4, 11.)]);
+                face(&[(6.7, 5.), (9., 3.8), (16., 3.8), (18., 5.), (17., 8.3), (7., 8.3)]);
+                bar(16., 4.9, 7.8, 2.6);
+                bar(22., 5.2, 8., 1.2);
+                bar(27.6, 4.6, 2.4, 1.9);
+                face(&[(7.6, 8.), (10., 8.), (8., 12.6), (6.6, 12.2)]);
+                face(&[(11., 8.), (15., 8.), (15.6, 12.6), (11.7, 13.2)]);
+                cut(11., 5.4, 15.8, 5.4, 0.9);
             }
             Mark::Burst => {
                 for (x, y) in [(0., 0.), (4., 5.), (0., 10.)] {
@@ -348,7 +353,7 @@ pub(super) fn match_score(s: &Surface, state: &Value, p: &Value) {
     let my = count(scores, t, 0).to_string();
     s.ink(&my, 45., 39., 30., side(t));
     let divider = 50. + s.measure(&my, 30.);
-    s.stroke(divider, 38., divider + 6., 20., 1.8, DIM);
+    s.stroke(divider + 3., 24., divider + 3., 37., 1., DIM);
     let their = count(scores, op, 0).to_string();
     s.ink(&their, divider + 13., 39., 30., side(op));
     let end = divider + 19. + s.measure(&their, 30.);
@@ -375,7 +380,7 @@ pub(super) fn compass(s: &Surface, yaw: f32) {
     let degrees = yaw.to_degrees();
     let center = s.w * 0.5;
     let bearing = (degrees.round() as i32).rem_euclid(360);
-    s.ink_mid(&format!("{bearing:03}°"), center, 25., 21., WHITE_HUD);
+    s.bold().ink_mid(&format!("{bearing:03}°"), center, 25., 19., WHITE_HUD);
     let pos = |d: f32| center + (d - degrees) * 3.1;
     for n in ((degrees - 54.) / 5.).ceil() as i32..=((degrees + 54.) / 5.).floor() as i32 {
         let d = n * 5;
@@ -413,7 +418,7 @@ pub(super) fn soldier(s: &Surface, p: &Value, vehicle: Option<&Value>, gathering
     let hp = count(p, "hp", 100).clamp(0, 100);
     let hp_color = if hp <= 30 { CORAL } else { WHITE_HUD };
     icon(s, Mark::Cross, x, base - 31., 1.15, hp_color);
-    s.ink(&hp.to_string(), x + 27., base - 12., 34., hp_color);
+    s.bold().ink(&hp.to_string(), x + 27., base - 12., 34., hp_color);
     let vit = x + 100.;
     strip(s, vit, base - 27., 81., hp as f32 / 100., 5, hp_color);
     icon(s, Mark::Bolt, vit, base - 17., 0.66, AMBER);
@@ -442,13 +447,12 @@ pub(super) fn soldier(s: &Surface, p: &Value, vehicle: Option<&Value>, gathering
         };
         s.ink(&course, x, base + 5., 13., DIM);
     } else {
-        s.ink(
-            "I  Рюкзак     K  Крафт     B  Стройка",
-            x,
-            base + 7.,
-            12.,
-            DIM,
-        );
+        let mut left = x;
+        for (key, label) in [("I", "Рюкзак"), ("K", "Крафт"), ("B", "Стройка")] {
+            left += s.keycap(key, left, base + 6.) + 5.;
+            s.ink(label, left, base + 6., 12., DIM);
+            left += s.measure(label, 12.) + 13.;
+        }
         if gathering {
             let mut xx = x;
             for (i, (key, label)) in MATERIALS.into_iter().enumerate() {
@@ -489,7 +493,7 @@ pub(super) fn kit(s: &Surface, p: &Value) {
     let active = if ammo == 0 { CORAL } else { WHITE_HUD };
     s.ink_right(&reserve_text, r, b - 25., 21., DIM);
     s.stroke(div - 4., b - 22., div + 2., b - 42., 2., DIM);
-    s.ink_right(&ammo.to_string(), div - 12., b - 22., 44., active);
+    s.bold().ink_right(&ammo.to_string(), div - 12., b - 22., 42., active);
     let reload = number(p, "reload", 0.);
     if reload > 0. {
         let ratio = (1. - reload / number(p, "reloadTime", 2.).max(0.01)).clamp(0., 1.);
@@ -523,7 +527,7 @@ pub(super) fn vehicle(s: &Surface, v: &Value) {
     let max_f = number(v, "maxFuel", 100.).max(1.);
     let hx = r - 256.;
     let fx = r - 118.;
-    icon(s, Mark::Hull, hx, b - 43., 0.9, WHITE_HUD);
+    icon(s, Mark::Armor, hx, b - 43., 0.9, WHITE_HUD);
     icon(s, Mark::Fuel, fx, b - 46., 0.9, AMBER);
     for (xx, val, max, color, space) in [
         (hx + 25., hull, max_h, WHITE_HUD, 99.),
@@ -540,7 +544,7 @@ pub(super) fn vehicle(s: &Surface, v: &Value) {
         strip(s, xx, b - 24., space, ratio as f32, 6, color);
     }
     s.ink(vehicle_name(kind), hx, b - 103., 18., WHITE_HUD);
-    s.ink_right(&format!("{speed} км/ч"), r, b - 102., 22., SKY_BLUE);
+    s.bold().ink_right(&format!("{speed} км/ч"), r, b - 102., 21., WHITE_HUD);
     let mut row = b - 65.;
     if matches!(kind, "mbt" | "apc") {
         let main = kind == "mbt" || count(v, "shellCapacity", 0) > 0;
@@ -550,6 +554,12 @@ pub(super) fn vehicle(s: &Surface, v: &Value) {
             } else {
                 Mark::Shell
             };
+            let cycle = if kind == "apc" { frontline_surge::vehicle_gun::APC_RELOAD }
+                else { frontline_surge::vehicle_gun::TANK_RELOAD };
+            let remaining = number(v, "gunRemaining", 0.);
+            if remaining > 0. {
+                strip(s, hx + 24., row + 5., 54., (1. - remaining / cycle).clamp(0., 1.), 6, AMBER);
+            }
             icon(s, shell, hx, row - 15., 0.94, WHITE_HUD);
             s.ink(
                 "ЛКМ",
@@ -892,7 +902,7 @@ pub(super) fn prompt(s: &Surface, text: &str, y: f32, color: Color, seated: bool
         .and_then(|t| t.split_once(']'))
         .filter(|(k, _)| k.chars().count() <= 4)
         .map_or((None, text), |(k, t)| (Some(k), t.trim_start()));
-    let key_w = key.map_or(0., |k| (s.measure(k, 13.) + 10.).max(19.) + 7.);
+    let key_w = key.map_or(0., |k| s.keycap_width(k) + 6.);
     let label = s.shorten(label, 15., limit - key_w);
     let x = if seated {
         25.
@@ -900,9 +910,7 @@ pub(super) fn prompt(s: &Surface, text: &str, y: f32, color: Color, seated: bool
         (s.w - key_w - s.measure(&label, 15.)) * 0.5
     };
     if let Some(k) = key {
-        s.rect(x + 1., y - 14., key_w - 7., 19., SHADOW);
-        s.rect(x, y - 15., key_w - 7., 18., WHITE_HUD);
-        s.mid(k, x + (key_w - 7.) * 0.5, y - 1., 13., INK);
+        s.keycap(k, x, y - 1.);
     }
     s.ink(&label, x + key_w, y, 15., color);
 }

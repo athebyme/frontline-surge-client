@@ -4,23 +4,22 @@ varying vec3 ray;
 uniform float Time;
 uniform vec4 SkyState;
 uniform vec3 Sun;
+uniform vec3 Eye;
+uniform mat4 Light;
+uniform vec4 Graphics;
+uniform highp sampler2D ShadowMap;
+vec3 sunlitAir(vec3 color, vec3 direction, float distanceToSurface);
 
 float hash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
-float octagon(vec2 p,vec2 radius){
-  vec2 q=abs(p)/radius;
-  return max(max(q.x,q.y),.72*(q.x+q.y))-1.;
+float cloudNoise(vec2 p){
+  vec2 k=floor(p), f=fract(p); f=f*f*(3.-2.*f);
+  return mix(mix(hash(k),hash(k+vec2(1.,0.)),f.x),
+             mix(hash(k+vec2(0.,1.)),hash(k+vec2(1.)),f.x),f.y);
 }
-float cloud(vec2 p,out float underside){
-  vec2 id=floor(p);
-  id.x=mod(id.x,8.);
-  vec2 q=fract(p)-.5;
-  q.y+=(hash(id+3.)-.5)*.19;
-  q.x+=(hash(id+8.)-.5)*.09;
-  float hull=octagon(q-vec2(.005,-.015),vec2(.28,.070));
-  hull=min(hull,octagon(q-vec2(-.08,.037),vec2(.120,.089)));
-  hull=min(hull,octagon(q-vec2(.083,.016),vec2(.112,.075)));
-  underside=1.-smoothstep(-.035,.028,q.y+.015*q.x);
-  return (1.-smoothstep(-.045,.075,hull))*step(.35,hash(id));
+float cloudDensity(vec2 p){
+  mat2 turn=mat2(.8,-.6,.6,.8);
+  return .54*cloudNoise(p)+.30*cloudNoise(turn*p*2.08+3.)
+         +.16*cloudNoise(p*4.21-7.);
 }
 void main(){
   vec3 dir=normalize(ray);
@@ -29,7 +28,7 @@ void main(){
   float toward=dot(normalize(dir.xz+vec2(.0001)),normalize(Sun.xz))*.5+.5;
   vec3 horizon=mix(vec3(.041,.055,.073),vec3(.737,.836,.862),day);
   horizon=mix(horizon,mix(vec3(.47,.379,.458),vec3(.999,.611,.370),toward),dusk*.89);
-  vec3 zenith=mix(vec3(.011,.018,.036),vec3(.145,.459,.725),day);
+  vec3 zenith=mix(vec3(.011,.018,.036),vec3(.25,.42,.56),day);
   vec3 sky=mix(horizon,zenith,smoothstep(-.035,.85,dir.y));
   float duskGlow=pow(sun,10.)*(.11+.53*dusk);
   sky+=vec3(.31,.16,.058)*duskGlow;
@@ -37,10 +36,13 @@ void main(){
   vec2 stars=vec2(az*108.,asin(clamp(dir.y,-1.,1.))*104.);
   float star=step(.981,hash(floor(stars)))*(1.-smoothstep(.015,.13,length(fract(stars)-.5)));
   sky+=vec3(.58,.66,.78)*star*night*smoothstep(.035,.22,dir.y);
-  // A drifting layer of cut-paper cumulus banks. Flat undersides share the sky fill.
-  vec2 p=vec2(az/6.2831853*8.,dir.y*3.8+.07)+vec2(Time*.00024,0.);
-  float underside;
-  float cover=cloud(p,underside)*smoothstep(.045,.16,dir.y);
+  // A continuous cloud layer projected onto the sky. Sample toward the sun
+  // for the lit rim; the same bank shades its thicker centre.
+  vec2 p=dir.xz*2.8/max(.12,dir.y+.12)+vec2(Time*.0025,.6);
+  float mass=cloudDensity(p);
+  float cover=smoothstep(.47,.67,mass)*smoothstep(.015,.14,dir.y);
+  float lightSide=cloudDensity(p+Sun.xz*.18);
+  float underside=clamp(.32+2.*(mass-.52)+2.3*(lightSide-mass),0.,1.);
   vec3 cloudLit=mix(vec3(.062,.077,.097),vec3(.994,.972,.902),day);
   vec3 cloudShade=mix(vec3(.032,.044,.060),vec3(.728,.809,.846),day);
   cloudLit=mix(cloudLit,vec3(.936,.662,.469),dusk*.80);
@@ -52,6 +54,6 @@ void main(){
   if(SkyState.w>1.5){
     float cool=mix(.14,.072,smoothstep(-.05,.78,dir.y));
     sky=vec3(cool+cover*.012);
-  }
+  }else sky=sunlitAir(sky,dir,52.);
   gl_FragColor=vec4(sky,1.);
 }

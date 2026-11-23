@@ -1,6 +1,33 @@
 //! Small isometric shop illustrations. Each face is drawn in catalogue coordinates.
 use super::super::Surface;
+use frontline_surge::arsenal::{Grip, Kit, Optic};
 use macroquad::prelude::*;
+
+pub(super) struct LoadoutPictures(Texture2D);
+
+impl LoadoutPictures {
+    pub(super) fn new() -> Self {
+        let texture = Texture2D::from_file_with_format(
+            include_bytes!("../assets/loadout-previews.png"), Some(ImageFormat::Png),
+        );
+        texture.set_filter(FilterMode::Linear);
+        Self(texture)
+    }
+
+    pub(super) fn draw(&self, s: &Surface, weapon: &str, kit: Kit, x: f32, y: f32) {
+        let platform = match weapon { "vx9" => 1, "ar4" => 2, _ => 0 };
+        let optic = match kit.optic { Optic::Irons => 0, Optic::Reflex => 1, Optic::Scope => 2 };
+        let grip = match kit.grip { Grip::Standard => 0, Grip::Light => 1, Grip::Stable => 2 };
+        let width = self.0.width() / 3.;
+        let height = self.0.height() / 9.;
+        draw_texture_ex(&self.0, x * s.scale, y * s.scale, WHITE, DrawTextureParams {
+            source: Some(Rect::new(grip as f32 * width, (3 * platform + optic) as f32 * height, width, height)),
+            dest_size: Some(vec2(182., 182. * height / width) * s.scale),
+            ..Default::default()
+        });
+    }
+}
+
 struct View<'a, 'f> {
     s: &'a Surface<'f>,
     x: f32,
@@ -70,11 +97,11 @@ impl View<'_, '_> {
 fn shade(c: Color, k: f32) -> Color {
     Color::new(c.r * k, c.g * k, c.b * k, c.a)
 }
-const OLIVE: Color = Color::new(0.58, 0.64, 0.43, 1.);
-const STEEL: Color = Color::new(0.62, 0.73, 0.73, 1.);
-const DARK: Color = Color::new(0.28, 0.35, 0.34, 1.);
-const SAND: Color = Color::new(0.79, 0.68, 0.48, 1.);
-const BRASS: Color = Color::new(0.91, 0.69, 0.30, 1.);
+const OLIVE: Color = Color::new(0.53, 0.56, 0.43, 1.);
+const STEEL: Color = Color::new(0.61, 0.65, 0.62, 1.);
+const DARK: Color = Color::new(0.32, 0.36, 0.33, 1.);
+const SAND: Color = Color::new(0.73, 0.68, 0.55, 1.);
+const BRASS: Color = Color::new(0.75, 0.65, 0.44, 1.);
 pub(super) fn product(s: &Surface, id: &str, x: f32, y: f32, k: f32) {
     let v = View { s, x, y, k };
     match id {
@@ -167,6 +194,33 @@ pub(super) fn product(s: &Surface, id: &str, x: f32, y: f32, k: f32) {
             v.block((15., 4., 10.), (2., 3., 3.), DARK);
             v.block((5., 4., 12.5), (12., 3., 1.5), DARK);
             v.block((9., 11., 3.), (3., 1., 5.), BRASS);
+        }
+        "cargo_rack" => {
+            v.block((0., 0., 0.), (25., 15., 2.), DARK);
+            for z in [0., 13.5] {
+                for x in [0., 12., 23.5] {
+                    v.block((x, z, 2.), (1.5, 1.5, 9.), STEEL);
+                }
+                for h in [5., 10.] {
+                    v.block((0., z, h), (25., 1.5, 1.), OLIVE);
+                }
+            }
+        }
+        "aux_fuel" => {
+            v.block((0., 0., 0.), (24., 12., 2.), DARK);
+            v.block((1., 1., 2.), (22., 10., 10.), OLIVE);
+            for x in [5., 17.] {
+                v.block((x, 0.8, 2.), (1.8, 10.4, 10.4), STEEL);
+            }
+            v.barrel(11., 4., 12., 2., 1., DARK);
+        }
+        "belt" => {
+            for i in 0..7 {
+                let x = i as f32 * 2.8;
+                let z = if i > 3 { (i - 3) as f32 * 1.3 } else { 0. };
+                v.block((x, z, 0.), (2., 9., 2.), BRASS);
+                v.block((x - 0.45, z + 3., 0.7), (3., 3., 1.7), DARK);
+            }
         }
         "mobility" => {
             for i in 0..2 {

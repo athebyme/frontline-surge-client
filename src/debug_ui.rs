@@ -1,4 +1,6 @@
 //! Local development panel. Only the dedicated process can enable match commands.
+use super::stash_ui::material_symbol;
+use super::{alpha, count, friendly_vehicle, Surface, BLUE_TEAM, EDGE, GOLD, INK, MATERIALS, MUTED, PAPER};
 use macroquad::prelude::*;
 use serde_json::{json, Value};
 
@@ -12,86 +14,6 @@ pub enum DebugAction {
 pub struct DebugUi {
     pub open: bool,
     selected: usize,
-}
-const RESOURCES: [(&str, &str); 5] = [
-    ("wood", "Дерево"),
-    ("metal", "Металл"),
-    ("oil", "Нефть"),
-    ("fuel", "Топливо"),
-    ("powder", "Порох"),
-];
-const INK: Color = Color::new(0.07, 0.095, 0.09, 1.);
-const PANEL: Color = Color::new(0.12, 0.15, 0.14, 1.);
-const LIGHT: Color = Color::new(0.93, 0.91, 0.82, 1.);
-const MUTE: Color = Color::new(0.65, 0.70, 0.64, 1.);
-const ACCENT: Color = Color::new(0.97, 0.73, 0.39, 1.);
-struct Canvas<'a> {
-    x: f32,
-    y: f32,
-    k: f32,
-    font: &'a Font,
-}
-impl Canvas<'_> {
-    fn plate(&self, x: f32, y: f32, w: f32, h: f32, c: Color) {
-        draw_rectangle(
-            self.x + x * self.k,
-            self.y + y * self.k,
-            w * self.k,
-            h * self.k,
-            c,
-        );
-    }
-    fn text(&self, t: &str, x: f32, y: f32, size: f32, c: Color) {
-        draw_text_ex(
-            t,
-            self.x + x * self.k,
-            self.y + y * self.k,
-            TextParams {
-                font: Some(self.font),
-                font_size: (size * self.k).round().max(8.) as u16,
-                color: c,
-                ..Default::default()
-            },
-        );
-    }
-    fn button(&self, x: f32, y: f32, w: f32, label: &str, selected: bool, enabled: bool) -> bool {
-        let rect = Rect::new(
-            self.x + x * self.k,
-            self.y + y * self.k,
-            w * self.k,
-            37. * self.k,
-        );
-        let (mx, my) = mouse_position();
-        let hover = rect.contains(vec2(mx, my));
-        self.plate(
-            x,
-            y,
-            w,
-            37.,
-            if enabled && hover {
-                Color::new(0.27, 0.31, 0.26, 1.)
-            } else {
-                PANEL
-            },
-        );
-        if selected {
-            self.plate(x, y + 35., w, 2., ACCENT);
-        }
-        self.text(
-            label,
-            x + 9.,
-            y + 24.,
-            17.,
-            if !enabled {
-                Color::new(0.49, 0.51, 0.48, 1.)
-            } else if selected {
-                ACCENT
-            } else {
-                LIGHT
-            },
-        );
-        enabled && hover && is_mouse_button_pressed(MouseButton::Left)
-    }
 }
 impl DebugUi {
     pub fn new() -> Self {
@@ -110,168 +32,95 @@ impl DebugUi {
         flight: bool,
         fps: bool,
     ) -> DebugAction {
-        let (w, h) = (screen_width(), screen_height());
-        let k = ((w - 20.) / 660.).min((h - 20.) / 514.).clamp(0.38, 1.35);
-        draw_rectangle(0., 0., w, h, Color::new(0.025, 0.037, 0.035, 0.72));
-        let c = Canvas {
-            x: (w - 660. * k) * 0.5,
-            y: (h - 514. * k) * 0.5,
-            k,
-            font,
-        };
-        c.plate(0., 0., 660., 514., INK);
-        c.plate(0., 0., 4., 514., ACCENT);
-        c.text("Отладка матча", 24., 42., 33., LIGHT);
-        if c.button(561., 16., 77., "F2  ×", false, true) {
+        let s = Surface::new(font);
+        let (x, y) = s.panel(816., 540., if admin { "Локальный разработчик" } else { "Публичный матч" }, "Отладка матча");
+        if s.button(x + 658., y + 25., 130., 34., "Закрыть   F2", false) {
             return DebugAction::Close;
         }
-        c.text(
-            if admin {
-                "Локальный разработчик · изменения применяет сервер"
+        let control = |left: f32, top: f32, width: f32, label: &str, enabled: bool| {
+            if enabled {
+                s.button(x + left, y + top, width, 35., label, false)
             } else {
-                "Публичный матч · доступны настройки отображения"
-            },
-            25.,
-            68.,
-            17.,
-            MUTE,
-        );
-        let roster = state["players"].as_array();
-        let bots = roster
-            .into_iter()
-            .flatten()
-            .filter(|p| p["bot"] == true)
-            .count();
-        let humans = roster.map_or(0, Vec::len) - bots;
-        c.text("Отображение", 24., 105., 20., ACCENT);
-        if c.button(
-            24.,
-            117.,
-            207.,
-            if fps {
-                "FPS   включён"
-            } else {
-                "FPS   выключен"
-            },
-            fps,
-            true,
-        ) {
+                s.disabled(x + left, y + top, width, 35., label);
+                false
+            }
+        };
+        s.text("ОТОБРАЖЕНИЕ", x + 28., y + 128., 12., MUTED);
+        if control(28., 145., 147., if fps {"FPS включён"} else {"FPS выключен"}, true) {
             return DebugAction::Fps;
         }
-        if c.button(
-            242.,
-            117.,
-            204.,
-            if flight {
-                "Вернуться к бойцу"
-            } else {
-                "Свободная камера"
-            },
-            flight,
-            admin,
-        ) {
+        if control(184., 145., 179., if flight {"Вернуться к бойцу"} else {"Свободная камера"}, admin) {
             return DebugAction::Flight;
         }
-        c.text("WASD · Q/E высота · Shift быстрее", 24., 180., 16., MUTE);
-        c.text("Участники", 24., 217., 20., ACCENT);
-        c.text(
-            &format!("Люди {humans}     Боты {bots}     Мест 12"),
-            25.,
-            246.,
-            18.,
-            LIGHT,
-        );
-        if c.button(330., 221., 127., "−  Бот", false, admin && bots > 0) {
-            return DebugAction::Command(json!({"op":"bots","count":bots-1}));
+        if admin {
+            s.text("WASD  ход    Q / E  высота    Shift  быстрее", x + 28., y + 201., 13., MUTED);
         }
-        if c.button(
-            469.,
-            221.,
-            128.,
-            "+  Бот",
-            false,
-            admin && bots < 10 && humans + bots < 12,
-        ) {
-            return DebugAction::Command(json!({"op":"bots","count":bots+1}));
+        let players = state["players"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+        let bots = players.iter().filter(|p| p["bot"] == true).count();
+        let humans = players.len() - bots;
+        s.line(x + 389., y + 119., x + 389., y + 205., 1., EDGE);
+        s.text("УЧАСТНИКИ", x + 413., y + 128., 12., MUTED);
+        s.right(&format!("{} / 12", players.len()), x + 787., y + 128., 15., PAPER);
+        for i in 0..12 {
+            let tint = if i < humans { PAPER } else if i < players.len() { BLUE_TEAM } else { EDGE };
+            s.rect(x + 413. + i as f32 * 31.5, y + 137., 26., 4., tint);
         }
-        c.text("Рюкзак и состояние", 24., 297., 20., ACCENT);
-        for (i, (id, name)) in RESOURCES.iter().enumerate() {
-            let v = player[*id].as_u64().unwrap_or(0);
+        s.text(&format!("Игроки  {humans}"), x + 413., y + 170., 16., PAPER);
+        s.text(&format!("Боты  {bots}"), x + 413., y + 193., 15., BLUE_TEAM);
+        if control(555., 155., 110., "−  Бот", admin && bots > 0) {
+            return DebugAction::Command(json!({"op":"bots", "count": bots - 1 }));
+        }
+        if control(676., 155., 111., "+  Бот", admin && bots < 10 && players.len() < 12) {
+            return DebugAction::Command(json!({"op":"bots", "count": bots + 1 }));
+        }
+
+        s.line(x + 28., y + 219., x + 787., y + 219., 1., EDGE);
+        s.text("РЮКЗАК", x + 28., y + 246., 12., MUTED);
+        for (i, (id, name)) in MATERIALS.iter().enumerate() {
+            let left = x + 28. + i as f32 * 153.;
+            let top = y + 259.;
+            let value = count(player, id, 0);
+            let hover = s.over(left, top, 146., 54.);
             let selected = i == self.selected;
-            if c.button(
-                24. + 123. * i as f32,
-                310.,
-                115.,
-                &format!("{name}  {v}"),
-                selected,
-                true,
-            ) {
-                self.selected = i;
-            }
+            s.rect(left, top, 146., 54., if selected || hover { alpha(PAPER, 0.09)} else { alpha(INK, 0.56)});
+            if selected { s.rect(left, top + 52., 146., 2., GOLD); }
+            material_symbol(&s, i, left + 20., top + 26., if selected { GOLD } else { MUTED });
+            s.text(name, left + 39., top + 20., 13., MUTED);
+            s.text(&value.to_string(), left + 39., top + 42., 20., PAPER);
+            if hover && s.click { self.selected = i; }
         }
-        let id = RESOURCES[self.selected].0;
-        let room = player[id].as_u64().unwrap_or(0) < 32;
+        let (id, label) = MATERIALS[self.selected];
         let alive = player["alive"] == true;
+        let room = (32 - count(player, id, 0)).max(0);
+        s.text(&format!("{label}   ·   свободно {room}"), x + 28., y + 347., 16., PAPER);
         for (i, amount) in [1, 16, 32].into_iter().enumerate() {
-            if c.button(
-                24. + 94. * i as f32,
-                363.,
-                83.,
-                &format!("+ {amount}"),
-                false,
-                admin && alive && room,
-            ) {
-                return DebugAction::Command(json!({"op":"grant","resource":id,"amount":amount}));
+            if control(425. + i as f32 * 124., 323., 113., &format!("+ {amount}"), admin && alive && room > 0) {
+                return DebugAction::Command(json!({"op":"grant", "resource":id, "amount":amount}));
             }
         }
-        if c.button(
-            330.,
-            363.,
-            267.,
-            "Здоровье и боезапас",
-            false,
-            admin && alive,
-        ) {
+        s.line(x + 28., y + 375., x + 787., y + 375., 1., EDGE);
+        s.text("ВОССТАНОВЛЕНИЕ", x + 28., y + 402., 12., MUTED);
+        if control(28., 414., 231., "Здоровье и боезапас", admin && alive) {
             return DebugAction::Command(json!({"op":"refill"}));
         }
-        let help = if !admin {
-            Some("Только для локального разработчика")
+        let vehicle_hint = if !admin {
+            Some("Хост включает команды при запуске с --dev-local.")
         } else if !vehicle_service {
-            Some("Нужен сервер с поддержкой F2-сервиса")
+            Some("Для обслуживания машины нужен сервер с поддержкой F2-сервиса.")
         } else if !alive {
-            Some("Доступно после возрождения")
-        } else if crate::ui::friendly_vehicle(state, player).is_none() {
-            Some("Подойди к союзной машине")
-        } else {
-            None
-        };
-        if c.button(
-            24.,
-            412.,
-            292.,
-            "Ремонт · топливо · боезапас",
-            false,
-            help.is_none(),
-        ) {
+            Some("Восстановление доступно после возрождения.")
+        } else if friendly_vehicle(state, player).is_none() {
+            Some("Для ремонта и заправки подойди к союзной машине.")
+        } else { None };
+        if control(270., 414., 385., "Машина   ·   ремонт, топливо и боезапас", vehicle_hint.is_none()) {
             return DebugAction::Command(json!({"op":"vehicleService"}));
         }
-        let feedback = player["message"]
-            .as_str()
-            .filter(|_| player["messageT"].as_f64().unwrap_or(0.) > 0.);
-        if let Some(text) = feedback.or(help) {
-            c.text(text, 24., 471., 16., LIGHT);
+        if let Some(hint) = vehicle_hint {
+            s.text(hint, x + 28., y + 472., 14., MUTED);
         }
-        c.text(
-            if admin {
-                "Esc закрывает панель. Камера оставляет бойца в матче."
-            } else {
-                "Хост включает команды при запуске сервера с --dev-local."
-            },
-            24.,
-            495.,
-            15.,
-            MUTE,
-        );
+        if let Some(feedback) = player["message"].as_str().filter(|_| player["messageT"].as_f64().unwrap_or(0.) > 0.) {
+            s.wrap(feedback, x + 28., y + 503., 757., 14., PAPER);
+        }
         DebugAction::None
     }
 }

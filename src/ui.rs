@@ -17,15 +17,18 @@ pub(crate) use crafting::friendly_vehicle;
 mod stash_ui;
 #[path = "field_hud.rs"]
 mod field_hud;
+#[path = "debug_ui.rs"]
+pub(crate) mod debug_ui;
 use stash_ui::Stash;
 
-const PAPER: Color = Color::new(0.93, 0.96, 0.94, 1.0);
-const GOLD: Color = Color::new(0.98, 0.72, 0.31, 1.0);
-const MUTED: Color = Color::new(0.70, 0.78, 0.76, 1.0);
-const BLUE_TEAM: Color = Color::new(0.57, 0.82, 0.85, 1.0);
-const RED_TEAM: Color = Color::new(0.93, 0.63, 0.51, 1.0);
-const INK: Color = Color::new(0.064, 0.094, 0.102, 1.0);
-const EDGE: Color = Color::new(0.75, 0.89, 0.85, 0.36);
+const PAPER: Color = Color::new(0.910, 0.914, 0.863, 1.);
+const GOLD: Color = Color::new(0.839, 0.694, 0.443, 1.);
+const MUTED: Color = Color::new(0.663, 0.690, 0.635, 1.);
+const BLUE_TEAM: Color = Color::new(0.537, 0.682, 0.682, 1.);
+const RED_TEAM: Color = Color::new(0.765, 0.561, 0.502, 1.);
+const INK: Color = Color::new(0.078, 0.098, 0.094, 1.);
+const PLATE: Color = Color::new(0.102, 0.125, 0.118, 0.96);
+const EDGE: Color = Color::new(0.494, 0.541, 0.490, 0.51);
 
 #[derive(Debug, PartialEq)]
 pub enum Action {
@@ -256,8 +259,7 @@ impl<'a> Surface<'a> {
         }
     }
     fn menu_ribbon(&self, x: f32, y: f32, w: f32) {
-        self.rect(x, y, w, 1., alpha(PAPER, 0.27));
-        self.rect(x, y - 1., 48., 3., GOLD);
+        self.rect(x, y, w, 1., EDGE);
     }
     fn rect(&self, x: f32, y: f32, w: f32, h: f32, c: Color) {
         draw_rectangle(
@@ -324,24 +326,23 @@ impl<'a> Surface<'a> {
             && self.pointer.y >= y
             && self.pointer.y <= y + h
     }
+    fn keycap_width(&self, key: &str) -> f32 {
+        (self.bold().measure(key, 12.) + 9.).max(18.)
+    }
+    fn keycap(&self, key: &str, x: f32, baseline: f32) -> f32 {
+        let width = self.keycap_width(key);
+        self.rect(x, baseline - 13., width, 17., PLATE);
+        self.border(x, baseline - 13., width, 17., alpha(MUTED, 0.75));
+        self.bold().mid(key, x + width / 2., baseline, 12., PAPER);
+        width
+    }
     fn button(&self, x: f32, y: f32, w: f32, h: f32, label: &str, primary: bool) -> bool {
         let hover = self.over(x, y, w, h);
-        if primary || hover {
-            let fill = if primary {
-                if hover {
-                    PAPER
-                } else {
-                    GOLD
-                }
-            } else {
-                alpha(PAPER, 0.15)
-            };
-            self.rect(x, y, w - 7., h, fill);
-            let xy = |xx, yy| vec2(xx * self.scale, yy * self.scale);
-            draw_triangle(xy(x + w - 7., y), xy(x + w, y), xy(x + w - 7., y + h), fill);
+        if primary {
+            self.rect(x, y, w, h, if hover { PAPER } else { GOLD });
         } else {
-            self.rect(x, y, w, h, alpha(INK, 0.48));
-            self.line(x, y + h - 1., x + w, y + h - 1., 1., alpha(MUTED, 0.45));
+            self.rect(x, y, w, h, if hover { Color::new(0.20, 0.23, 0.20, 1.) } else { PLATE });
+            self.border(x, y, w, h, if hover { MUTED } else { EDGE });
         }
         self.bold().mid(
             label,
@@ -353,13 +354,14 @@ impl<'a> Surface<'a> {
         hover && self.click
     }
     fn disabled(&self, x: f32, y: f32, w: f32, h: f32, label: &str) {
-        self.line(x, y + h - 1., x + w, y + h - 1., 1., alpha(MUTED, 0.23));
+        self.rect(x, y, w, h, alpha(INK, 0.42));
+        self.border(x, y, w, h, alpha(MUTED, 0.20));
         self.bold().mid(
             label,
             x + w * 0.5,
             y + h * 0.5 + 5.,
             14.,
-            alpha(MUTED, 0.68),
+            alpha(MUTED, 0.87),
         );
     }
     fn wrap(&self, text: &str, x: f32, baseline: f32, width: f32, size: f32, c: Color) {
@@ -464,14 +466,13 @@ impl<'a> Surface<'a> {
         self.text("FRONTLINE  SURGE", x + 47., y + 25., 16., PAPER);
     }
     fn panel(&self, w: f32, h: f32, kicker: &str, title: &str) -> (f32, f32) {
-        self.rect(0., 0., self.w, self.h, alpha(INK, 0.90));
+        self.rect(0., 0., self.w, self.h, alpha(INK, 0.57));
         let x = (self.w - w) * 0.5;
         let y = (self.h - h) * 0.5;
-        let heading = self.bold();
-        self.line(x + 27., y + 28., x + 34., y + 33., 2.8, GOLD);
-        self.line(x + 34., y + 33., x + 41., y + 28., 2.8, GOLD);
-        heading.text(kicker, x + 50., y + 37., 12., GOLD);
-        heading.text(title, x + 25., y + 85., 40., PAPER);
+        self.rect(x, y, w, h, PLATE);
+        self.border(x, y, w, h, EDGE);
+        self.text(kicker, x + 27., y + 33., 12., MUTED);
+        self.bold().text(title, x + 25., y + 78., 34., PAPER);
         self.menu_ribbon(x + 27., y + 98., w - 54.);
         (x, y)
     }
@@ -902,8 +903,8 @@ impl Ui {
                     "Выбери материал и количество для погрузки или выгрузки",
                 ),
                 (
-                    "Y / колесо / N",
-                    "Вид / дистанция / дневной, ночной и тепловизионный канал",
+                    "Y / колесо / Z / N",
+                    "Вид / дистанция и зум / зум 1–2–4× / канал оптики",
                 ),
             ],
             3 => &[
@@ -1346,7 +1347,9 @@ impl Ui {
                         self.map_open = false;
                     }
                 } else {
-                    self.hud(&Surface::field(&title), state, local, camera);
+                    let mut hud = Surface::field(font);
+                    hud.title_font = Some(&title);
+                    self.hud(&hud, state, local, camera);
                 }
                 Action::None
             }

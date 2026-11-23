@@ -2,7 +2,7 @@
 #![cfg_attr(all(target_os = "windows", not(test)), windows_subsystem = "windows")]
 mod actors;
 mod chase;
-mod debug_ui;
+use ui::debug_ui;
 mod drone_view;
 mod motion;
 mod settings;
@@ -312,15 +312,21 @@ impl Play {
                 if is_key_pressed(KeyCode::Y) {
                     self.vehicle_camera.toggle();
                 }
-                self.vehicle_camera.scroll(mouse_wheel().1);
+                let armored = self.in_armored_optics();
+                self.vehicle_camera.scroll(mouse_wheel().1, armored);
                 if !was_onboard && self.in_armored_optics() {
                     if let Some((_, joint)) = self.motion.local_turret { self.yaw = joint; }
                 }
                 if self.in_armored_optics() && is_key_pressed(KeyCode::N) {
                     self.vehicle_camera.sensor = self.vehicle_camera.sensor.next();
                 }
+                if self.in_armored_optics() && is_key_pressed(KeyCode::Z) {
+                    self.vehicle_camera.cycle_magnification();
+                }
             }
-            let sensitivity = if self.drone_zoom || is_mouse_button_down(MouseButton::Right) {
+            let sensitivity = if self.in_armored_optics() {
+                0.0022 / self.vehicle_camera.magnification()
+            } else if self.drone_zoom || is_mouse_button_down(MouseButton::Right) {
                 0.00135
             } else {
                 0.0022
@@ -499,6 +505,7 @@ impl Play {
         self.render_local["gunPitch"] = json!(pitch);
         self.render_local["onboardOptic"] = json!(self.vehicle_camera.onboard);
         self.render_local["opticSensor"] = json!(self.vehicle_camera.sensor.label());
+        self.render_local["opticZoom"] = json!(self.vehicle_camera.magnification());
     }
     fn update_presentation(&mut self, dt: f32, active: bool) {
         if !self.local.is_object() {
@@ -560,6 +567,7 @@ impl Play {
                     pose.turret,
                     self.yaw,
                     self.pitch,
+                    self.vehicle_camera.magnification(),
                 )
             } else {
                 let height = match v["kind"].as_str() {
@@ -774,9 +782,9 @@ async fn main() {
                     < 0.57
                     && cam.position.y < 2.15;
                 local["freeCamera"] = json!(!inside_operator);
-                people.draw_world(&play.state, &local, dt, &play.motion);
+                people.draw_world(&play.state, &local, dt, &play.motion, cam.position);
             } else {
-                people.draw_world(&play.state, &play.render_local, dt, &play.motion);
+                people.draw_world(&play.state, &play.render_local, dt, &play.motion, cam.position);
             }
             drone_view::draw_pulses(&play.state);
             drone_view::draw(&play.state, &play.local, cam.position, &play.motion);

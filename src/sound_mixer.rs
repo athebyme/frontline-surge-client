@@ -95,6 +95,9 @@ struct Voice {
     right: f32,
     filtered: f32,
     air: f32,
+    wait: usize,
+    low: f32,
+    body_gain: f32,
 }
 struct MotorVoice {
     target: Motor,
@@ -252,7 +255,16 @@ impl Mixer {
         self.variants[key] = (take + 1) % self.bank.cues[key].len();
         let angle = (effect.pan.clamp(-1., 1.) + 1.) * FRAC_PI_4;
         let level = effect.gain * effect.cue.level();
-        let cutoff = 14500. / (1. + 0.045 * effect.distance);
+        let in_hull = effect.armored && effect.cue.report();
+        let open_cutoff = 14500. / (1. + 0.045 * effect.distance);
+        let cutoff = if in_hull { open_cutoff.min(3400.) } else { open_cutoff };
+        // Shape the low end of the existing field recordings. The gunner hears
+        // the enclosure, while a player standing beside the vehicle hears the attack.
+        let body_gain = match effect.cue {
+            Cue::ShellBlast | Cue::Blast | Cue::Cannon => 0.42,
+            Cue::Apc | Cue::Mounted => 0.24,
+            _ => 0.,
+        } + if in_hull { 0.28 } else { 0. };
         self.voices.push(Voice {
             effect,
             index: (effect.offset * RATE as f32) as usize,
@@ -261,6 +273,9 @@ impl Mixer {
             right: angle.sin() * level,
             filtered: 0.,
             air: 1. - (-TAU * cutoff / RATE as f32).exp(),
+            wait: (effect.arrival_delay * RATE as f32).round() as usize,
+            low: 0.,
+            body_gain,
         });
     }
     pub(super) fn render(&mut self, output: &mut [i16]) {
@@ -276,10 +291,16 @@ impl Mixer {
                 right += r;
             }
             for v in &mut self.voices {
+                if v.wait > 0 {
+                    v.wait -= 1;
+                    continue;
+                }
                 if let Some(&x) = self.bank.cues[v.effect.cue as usize][v.take].get(v.index) {
                     v.filtered += v.air * (x - v.filtered);
-                    left += v.filtered * v.left;
-                    right += v.filtered * v.right;
+                    v.low += 0.032 * (v.filtered - v.low);
+                    let sample = v.filtered + v.low * v.body_gain;
+                    left += sample * v.left;
+                    right += sample * v.right;
                     v.index += 1;
                 }
             }
@@ -307,7 +328,26 @@ mod tests {
             priority: 3,
             distance: 0.,
             offset: 0.,
+            arrival_delay: 0.,
+            armored: false,
         }
+    }
+    #[test]
+    fn remote_report_waits_and_closed_armor_changes_the_mix() {
+        let mut open = Mixer::new();
+        let mut cabin = Mixer::new();
+        let mut shot = trigger(Cue::Mounted, 0.);
+        shot.arrival_delay = 0.1;
+        open.add(shot);
+        shot.armored = true;
+        cabin.add(shot);
+        let mut a = vec![0; RATE / 2];
+        let mut b = a.clone();
+        open.render(&mut a);
+        cabin.render(&mut b);
+        assert!(a[..RATE / 5].iter().all(|&x| x == 0));
+        assert!(a[RATE / 5..].iter().any(|&x| x != 0));
+        assert_ne!(a, b);
     }
     #[test]
     fn field_takes_are_distinct_and_all_events_reach_mix() {

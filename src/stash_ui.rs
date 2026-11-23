@@ -65,7 +65,15 @@ pub(super) fn material_symbol(
     y: f32,
     color: macroquad::prelude::Color,
 ) {
-    let stroke = |ax, ay, bx, by| s.line(x + ax, y + ay, x + bx, y + by, 1.7, color);
+    material_symbol_scaled(s, kind, x, y, 1., color);
+}
+pub(super) fn material_symbol_scaled(
+    s: &Surface, kind: usize, x: f32, y: f32, scale: f32, color: macroquad::prelude::Color,
+) {
+    let stroke = |ax, ay, bx, by| s.line(
+        x + ax * scale, y + ay * scale, x + bx * scale, y + by * scale,
+        (1.55 * scale).max(0.95), color,
+    );
     let edges: &[(f32, f32, f32, f32)] = match kind {
         0 => &[
             (-8., 2., 2., -7.),
@@ -78,14 +86,15 @@ pub(super) fn material_symbol(
             (9., -1., 9., -4.),
         ],
         1 => &[
-            (-9., -3., 3., -7.),
-            (3., -7., 9., -4.),
-            (9., -4., -3., 1.),
-            (-3., 1., -9., -3.),
-            (-9., -3., -9., 3.),
-            (-9., 3., -3., 7.),
-            (-3., 7., 9., 2.),
-            (9., 2., 9., -4.),
+            (-7., -7., 7., -7.),
+            (-7., -4., 7., -4.),
+            (-7., -7., -7., -4.),
+            (7., -7., 7., -4.),
+            (0., -4., 0., 4.),
+            (-7., 4., 7., 4.),
+            (-7., 7., 7., 7.),
+            (-7., 4., -7., 7.),
+            (7., 4., 7., 7.),
         ],
         2 => &[
             (0., -9., -6., 1.),
