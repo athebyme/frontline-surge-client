@@ -1,0 +1,31 @@
+[package]
+name = "frontline-surge"
+version = "0.5.4"
+edition = "2021"
+publish = false
+default-run = "frontline-surge"
+
+[features]
+default = ["client"]
+client = ["dep:macroquad", "dep:miniz_oxide"]
+
+[[bin]]
+name = "frontline-surge"
+path = "src/main.rs"
+required-features = ["client"]
+
+[dependencies]
+macroquad = { version = "0.4", default-features = false, optional = true }
+miniz_oxide = { version = "0.8", optional = true }
+serde_json = "1"
+
+# Both repositories ship identical protocol sources. The dedicated side's
+# conditional branches stay disabled in every client build.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("server"))'] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

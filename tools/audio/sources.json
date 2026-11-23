@@ -1,0 +1,222 @@
+{
+  "136399.mp3": {
+    "url": "https://cdn.freesound.org/previews/136/136399_1661766-hq.mp3",
+    "sha256": "fde9144b1eb3f03189683332d59c14f6a867a7569fc7967eb89fcf2c3038f072"
+  },
+  "21187.mp3": {
+    "url": "https://cdn.freesound.org/previews/21/21187_57789-hq.mp3",
+    "sha256": "5f5c1c9c686aa95d746e2ec06b77a73b83bba0f755b2adc1c5707d8ca502fd54"
+  },
+  "329523.mp3": {
+    "url": "https://cdn.freesound.org/previews/329/329523_1442200-hq.mp3",
+    "sha256": "4220487972c86a9b9a922cc590c9830997427ca1746dbf75cba3ff12dc8c7438"
+  },
+  "377786.mp3": {
+    "url": "https://cdn.freesound.org/previews/377/377786_4817223-hq.mp3",
+    "sha256": "1964c852a3e84ce847bc2b884ed89c2214cbb67827bf1b115fc04b434cc043d7"
+  },
+  "46655.mp3": {
+    "url": "https://cdn.freesound.org/previews/46/46655_57789-hq.mp3",
+    "sha256": "5cb296a9aeb19ca7efdb4018988bb72df84bfba01438cea18ef550eb39d096ed"
+  },
+  "528944.mp3": {
+    "url": "https://cdn.freesound.org/previews/528/528944_3302313-hq.mp3",
+    "sha256": "4667388a7e4d0e080904fb072130495da659ed397466e74d6c52950e34c9730e"
+  },
+  "613669.mp3": {
+    "url": "https://cdn.freesound.org/previews/613/613669_1038806-hq.mp3",
+    "sha256": "13ee818d9ad2678d4e90948ae83752f5bd95c108c6b48d0d44688868b95c286a"
+  },
+  "668071.mp3": {
+    "url": "https://cdn.freesound.org/previews/668/668071_7842170-hq.mp3",
+    "sha256": "14f6d31855cda5265b385aad064361a236afd5ebf45e23a5bac60e7cdcc79f29"
+  },
+  "beltHandle1.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/rpg-audio/beltHandle1.ogg",
+    "sha256": "2ef665bd8b65dbe669f4560be38a6d8f04a162e618b15a49e3e71b58e558aab0"
+  },
+  "beltHandle2.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/rpg-audio/beltHandle2.ogg",
+    "sha256": "f3b692d5c83263c25bce779805b212dbab515d18a603c695fc6a1e8650cf5366"
+  },
+  "cloth1.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/rpg-audio/cloth1.ogg",
+    "sha256": "ddb93a3671233f95da0e0b10367f082f7eb42fa6caaddcf776410aa8833c747d"
+  },
+  "cloth2.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/rpg-audio/cloth2.ogg",
+    "sha256": "8a7451193c38bc05483aec25dd193e163a15d44cf7fff04ac7912573231b0201"
+  },
+  "cloth3.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/rpg-audio/cloth3.ogg",
+    "sha256": "a48632d17a4f1416541d261a32a31612e01267144c407fa3ecab3ff410f0085b"
+  },
+  "clothBelt.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/rpg-audio/clothBelt.ogg",
+    "sha256": "f29560a2aea95bbfeb643e1e8f56ec2b6f7e32f32ce4e140645a36db81de3253"
+  },
+  "drawKnife1.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/rpg-audio/drawKnife1.ogg",
+    "sha256": "276403e72c3b71c47bc24db3083970c23f8e5551ffa78f436f83483c56f3f0bb"
+  },
+  "dropLeather.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/rpg-audio/dropLeather.ogg",
+    "sha256": "097e1d3b74949b0145fda0519d40b7e0773ab82ec4858727f95be830927e1a45"
+  },
+  "footstep_concrete_000.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/footstep_concrete_000.ogg",
+    "sha256": "d7267e183067757c92c169de2a379abea592cfca6b39bb2e8feea15221ad79fe"
+  },
+  "footstep_concrete_001.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/footstep_concrete_001.ogg",
+    "sha256": "507a75eb19b897087855a3be3cf11a12d7fa37d143ad535eeebe0b8031c7325d"
+  },
+  "footstep_concrete_002.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/footstep_concrete_002.ogg",
+    "sha256": "b21fa546d74941196b25da8a20b7010abd8c05c4fcf93545d1f344e66a664e13"
+  },
+  "footstep_grass_000.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/footstep_grass_000.ogg",
+    "sha256": "9d49497777405d78d7cf7f2888e28277f3a23192300cfd1d79d54876b20f479f"
+  },
+  "footstep_grass_001.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/footstep_grass_001.ogg",
+    "sha256": "fb28781bd22b2eefdc14077f1adf5c94d7fe9c3a130194633b55f3e0d39d9f04"
+  },
+  "footstep_grass_002.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/footstep_grass_002.ogg",
+    "sha256": "73a520139f5be716a403bfe9c80e0e94d1e61d8e9de04a354b336392164b53dc"
+  },
+  "handleSmallLeather.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/rpg-audio/handleSmallLeather.ogg",
+    "sha256": "ae3cbf695aa0a8b98b5a80a835be5a3ccbd5446a24db2235cd4c3cd6fc92ed96"
+  },
+  "impactGlass_medium_000.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactGlass_medium_000.ogg",
+    "sha256": "9252d50bfb85edb17d6073c4a7806e10cdb9de56d3dbfc93a4b9727146d2df6d"
+  },
+  "impactGlass_medium_001.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactGlass_medium_001.ogg",
+    "sha256": "d3d806cb3012c9ddd87010b30295ccb74d6d8b690077d19e67afd09a9d8feb03"
+  },
+  "impactGlass_medium_002.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactGlass_medium_002.ogg",
+    "sha256": "48616f22c95589ed9fe55babf0fd012721d7b2ef1b9e85c2ad6408a2cd7c164f"
+  },
+  "impactMetal_heavy_000.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactMetal_heavy_000.ogg",
+    "sha256": "e07045693e4a2b3d165c424e3dab4c781d9ff8880a386880ac89a51315d7f831"
+  },
+  "impactMetal_heavy_001.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactMetal_heavy_001.ogg",
+    "sha256": "83554049f81f4db9209379e103c30bfa63f65c42189a03f300b045c2c82e23ae"
+  },
+  "impactMetal_heavy_002.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactMetal_heavy_002.ogg",
+    "sha256": "b914c8f1eb7c0f34bb165d7c77f4be0351f6be0660c13c53e65424e262e2c093"
+  },
+  "impactMetal_light_000.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactMetal_light_000.ogg",
+    "sha256": "33b5e6e37c6e9d54e07bf5a89b12c76e879f40c1ea83cdd82714df1d6f9fec6d"
+  },
+  "impactMetal_light_001.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactMetal_light_001.ogg",
+    "sha256": "fba69c467ddd85da7b1d82e259f936b876d9ba6a3d6f1b24bdd10468e46bfe08"
+  },
+  "impactMetal_light_002.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactMetal_light_002.ogg",
+    "sha256": "25a96f90a9a1f88a531e824e126f0519504625e5635e65a72e4f31611428db29"
+  },
+  "impactMetal_medium_000.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactMetal_medium_000.ogg",
+    "sha256": "a96f879fec0864a8938e0c745b6996a6c5679c16a234ce31a01cc995e8401003"
+  },
+  "impactMetal_medium_001.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactMetal_medium_001.ogg",
+    "sha256": "e8a9eaba7c4d27422e4eeb3e6c7100d5d7dc0f83e005efc98c960adcc5265337"
+  },
+  "impactMetal_medium_002.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactMetal_medium_002.ogg",
+    "sha256": "7e89ce2ca0dbda95ea2b78d4b50791cab35c10d20e9f5ccd45dd0b00e99ff548"
+  },
+  "impactMining_000.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactMining_000.ogg",
+    "sha256": "36b4ea107222d073c67ca64dde26944975609202d5090b2f2021213c1a7e35cd"
+  },
+  "impactMining_001.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactMining_001.ogg",
+    "sha256": "61235a18de3f3d92118235398222dbf51d448f1be70b1c8bc962b10b86f2d9c6"
+  },
+  "impactMining_002.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactMining_002.ogg",
+    "sha256": "059558ec751115ca6b1441e00f0adc837c1a3eeb0a066b109e0fd879fc5d0b0c"
+  },
+  "impactPlank_medium_000.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactPlank_medium_000.ogg",
+    "sha256": "8403cd7a043f0391574c88c55dd205743725b5363d2407f6de145f201690b68f"
+  },
+  "impactPlank_medium_001.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactPlank_medium_001.ogg",
+    "sha256": "d7c304319f8beac616231b62041fa8da74045b62d7155965516efb9b19303df4"
+  },
+  "impactPlank_medium_002.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactPlank_medium_002.ogg",
+    "sha256": "f6a14da45994229676b4f29e6a35f504b5c2ec2b8166fb1a3b1aa004bc6911ef"
+  },
+  "impactPunch_heavy_000.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactPunch_heavy_000.ogg",
+    "sha256": "b33a8f14068aec24ec69ba85e5e87fdc41228975f6a1a3e44a6e7d6fc3d9f8d8"
+  },
+  "impactPunch_heavy_001.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactPunch_heavy_001.ogg",
+    "sha256": "f92f5cb6ba4ff2766497292ffd90865654317eeca976f5652e0708dbdcdc0dd9"
+  },
+  "impactPunch_heavy_002.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactPunch_heavy_002.ogg",
+    "sha256": "7993dd4c156b9979ad69f17be5ebe31850b16039a3857f8477141be54dfee1b3"
+  },
+  "impactSoft_heavy_000.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactSoft_heavy_000.ogg",
+    "sha256": "49e7ca88743fca974bb8676ea138b751cfd8f9033b5e7af8736c2a215d6edbc1"
+  },
+  "impactSoft_heavy_001.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactSoft_heavy_001.ogg",
+    "sha256": "4d0096364ba9e46119d2ff6df493fdc101bd2e1efae061da5e5f77a53b3fdcb6"
+  },
+  "impactSoft_heavy_002.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactSoft_heavy_002.ogg",
+    "sha256": "d130ae541951243d3f6ed963d0057450a445ffe117fbf9a084d34eb1635cb563"
+  },
+  "impactTin_medium_000.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactTin_medium_000.ogg",
+    "sha256": "f4bbee66ca191ec744b84fc07ac9ed2a6fda955d51cfed8360f12b62815d3cbd"
+  },
+  "impactTin_medium_001.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactTin_medium_001.ogg",
+    "sha256": "84253095543c094d83cd749f42ecfbc96e356b60385f18a192c18eafb25b3cc6"
+  },
+  "impactTin_medium_002.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactTin_medium_002.ogg",
+    "sha256": "c1d2c4f9910d4529581ae56a9a9a01454c4619fbb7d6da7616221d8ec58cc0c4"
+  },
+  "impactWood_heavy_000.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactWood_heavy_000.ogg",
+    "sha256": "15ff82332f342c30e469215539e1cc57e11b221aa2cf7e11e811d313a9927f3d"
+  },
+  "impactWood_heavy_001.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactWood_heavy_001.ogg",
+    "sha256": "f1b07a53ac10c615fff9ba470511fdeb722b5902e1a8520759fc20ad6f546015"
+  },
+  "impactWood_heavy_002.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/impact-sounds/impactWood_heavy_002.ogg",
+    "sha256": "ce1e06f2a05f2634c645cb72f6a1623e64bc2d92be34917430a61031fb6597d4"
+  },
+  "metalClick.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/rpg-audio/metalClick.ogg",
+    "sha256": "9851a69d0c613e13bceef08060ecc4148f098ef487927cbebe270d642398a3b3"
+  },
+  "metalLatch.ogg": {
+    "url": "https://raw.githubusercontent.com/Mcamento8/open-game-sfx-index/34bbe8b525b5ceff3804915ea745532af11f6055/audio/rpg-audio/metalLatch.ogg",
+    "sha256": "ba9ba60b172b3ebc131a940f25793cd2e207aca7af73dc80d637277f060f1708"
+  }
+}
