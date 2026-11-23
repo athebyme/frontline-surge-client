@@ -2,14 +2,14 @@
 // Original fictional vehicle exteriors and industrial props. All mobile templates face +Z.
 const halfPi=Math.PI*.5;
 const materials=[
- ['graphite','#383e3d','metal'],['underbody','#303633','metal'],['rubber','#303533','cloth'],
- ['petrol','#586d67','metal'],['patrolKhaki','#aaa88a','metal'],['edgeTan','#c0b79a','metal'],
- ['glassBlue','#546d73','glass'],['glassBright','#789797','glass'],['lampWhite','#eee5c5','light'],
- ['amber','#c7904f','light'],['brake','#974844','glass'],['convoy','#718074','metal'],
+ ['graphite','#343c42','metal'],['underbody','#2b3336','metal'],['rubber','#303533','cloth'],
+ ['petrol','#49776f','metal'],['patrolKhaki','#b6ac8c','metal'],['edgeTan','#c0b79a','metal'],
+ ['glassBlue','#456d80','glass'],['glassBright','#83acb5','glass'],['lampWhite','#eee5c5','light'],
+ ['amber','#c7904f','light'],['brake','#974844','glass'],['convoy','#6b887a','metal'],
  ['convoyShade','#515e58','metal'],['composite','#6e766b','metal'],['compositeEdge','#859084','metal'],
- ['optic','#4e8587','glass'],['freight','#687f86','metal'],['freightEdge','#839598','metal'],
- ['industrial','#a3aba3','metal'],['asphalt','#6f7370','asphalt'],['railYellow','#ceaa65','metal'],
- ['stripeWhite','#c3c4ac','plaster'],['charred','#494d47','metal'],['slateBody','#576f77','metal'],['slateArmor','#778b8d','metal'],['fieldBlue','#48869c','metal'],['signalBlue','#92c4ca','light'],['coyote','#a39273','metal'],['dune','#b5a389','metal'],['clay','#9e6856','metal'],['fieldRed','#a35246','metal'],['gaiter','#4d5450','cloth'],['runningLamp','#edac54','light'],['readyLamp','#98cc94','light'],['standbyLamp','#728783','glass'],['ochreDust','#938772','cloth']
+ ['optic','#4e8587','glass'],['freight','#628996','metal'],['freightEdge','#87a6ab','metal'],
+ ['industrial','#a9b6b1','metal'],['asphalt','#6f7370','asphalt'],['railYellow','#e6b85c','metal'],
+ ['stripeWhite','#c3c4ac','plaster'],['charred','#494d47','metal'],['slateBody','#527882','metal'],['slateArmor','#819c9d','metal'],['fieldBlue','#448da8','metal'],['signalBlue','#92c4ca','light'],['coyote','#a39273','metal'],['dune','#c5a982','metal'],['clay','#a96749','metal'],['fieldRed','#b35e50','metal'],['gaiter','#4d5450','cloth'],['runningLamp','#edac54','light'],['readyLamp','#98cc94','light'],['standbyLamp','#728783','glass'],['ochreDust','#938772','cloth']
 ];
 function wheel(r,x,y,z,radius,thick,side=Math.sign(x)||1){
   const outer=x+side*thick*.5;

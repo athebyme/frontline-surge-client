@@ -1,27 +1,27 @@
 'use strict';
 // Original buildings, vegetation, vehicles and furniture for the native mesh baker.
   const materials = [
-    ['concrete','#aaaa98','concrete'], ['lime','#b5ac8e','plaster'], ['ochre','#ac906b','plaster'], ['whitewash','#c3b89f','plaster'],
-    ['brickwork','#985d45','brick'], ['rubble','#827e6b','stone'], ['limestone','#aaa184','stone'],
-    ['basalt','#697066','stone'], ['slate','#4f5855','roof'], ['terracotta','#965d45','roof'],
+    ['concrete','#bdc1b6','concrete'], ['lime','#e1d7b8','plaster'], ['ochre','#ccae83','plaster'], ['whitewash','#e7d8b8','plaster'],
+    ['brickwork','#b76b53','brick'], ['rubble','#827e6b','stone'], ['limestone','#aaa184','stone'],
+    ['basalt','#697066','stone'], ['slate','#506777','roof'], ['terracotta','#b8684c','roof'],
     ['tileEdge','#80513e','plaster'], ['lead','#606661','metal'], ['soot','#333a35','plaster'],
-    ['quietGlass','#425858','glass'], ['sunGlass','#738180','glass'], ['void','#292d26','flat'],
-    ['joinery','#77684d','wood'], ['creamPaint','#c5bba0','wood'], ['shutters','#5a6658','plank'],
-    ['barnBoard','#816047','plank'], ['ciderBoard','#905943','plank'], ['darkWood','#544c39','wood'],
-    ['weatherWood','#93805e','wood'], ['woodcut','#bf9e70','wood'], ['trunk','#736249','bark'],
-    ['timber','#82694b','bark'], ['needles','#364b40','leaves'], ['spruce','#49634b','leaves'],
-    ['spruceSun','#5d7554','leaves'], ['leafShadow','#43583d','leaves'], ['leaf','#66774b','leaves'],
-    ['leafSun','#80905a','leaves'], ['hedge','#586b48','leaves'], ['leafDry','#9b965c','leaves'],
-    ['khakiTarp','#a7997c','cloth'],['tarpSeam','#867b63','cloth'],
+    ['quietGlass','#425d66','glass'], ['sunGlass','#82a7aa','glass'], ['void','#292d26','flat'],
+    ['joinery','#927252','wood'], ['creamPaint','#c5bba0','wood'], ['shutters','#588075','plank'],
+    ['barnBoard','#986545','plank'], ['ciderBoard','#a76c4f','plank'], ['darkWood','#544c39','wood'],
+    ['weatherWood','#a18a68','wood'], ['woodcut','#bf9e70','wood'], ['trunk','#786348','bark'],
+    ['timber','#82694b','bark'], ['needles','#31594c','leaves'], ['spruce','#42745a','leaves'],
+    ['spruceSun','#679065','leaves'], ['leafShadow','#3e6954','leaves'], ['leaf','#60924f','leaves'],
+    ['leafSun','#93aa64','leaves'], ['hedge','#517c51','leaves'], ['leafDry','#b2a05f','leaves'],
+    ['khakiTarp','#ae986c','cloth'],['tarpSeam','#867b63','cloth'],
     ['oilBlack','#373c37','metal'],['pumpRed','#9d614e','metal'],['creamPlate','#d7c799','metal'],
-    ['steel','#59615c','metal'], ['oxide','#88644c','metal'], ['iron','#414846','metal'],
+    ['steel','#55636b','metal'], ['oxide','#a76847','metal'], ['iron','#414846','metal'],
     ['paleSteel','#92978a','metal'], ['tire','#343a35','cloth'], ['truckPaint','#65715a','metal'],
     ['truckDark','#515b49','metal'], ['armor','#788065','metal'], ['gunTube','#737a6a','metal'],
     ['canvas','#97947b','cloth'], ['fieldPaint','#687864','wood'],
     ['sack','#a39670','sandbag'], ['sackShade','#8f8464','sandbag'], ['sackLight','#b2a680','sandbag'],
     ['stencil','#d4c9a0','plaster'], ['mustard','#c29b54','metal'], ['redLead','#995b48','metal'],
-    ['aerial','#666b61','metal'], ['flagRed','#a35848','cloth'], ['flagBlue','#6b8680','cloth'],
-    ['lamp','#e2c17c','light'], ['buildGo','#76b3a0','light'], ['buildStop','#df8065','light'],
+    ['aerial','#666b61','metal'], ['flagRed','#c26a4c','cloth'], ['flagBlue','#5d95a1','cloth'],
+    ['lamp','#f4cd70','light'], ['buildGo','#76b3a0','light'], ['buildStop','#df8065','light'],
     ['friendMark','#70b5d7','light'],['enemyMark','#db775a','light'],
     ['uniform','#696e61','cloth'], ['uniformDark','#4a5349','cloth'], ['wool','#767a6b','cloth'],
     ['belt','#584732','wood'], ['hide','#68523d','cloth'], ['skin','#c59b76','cloth'],
@@ -197,21 +197,21 @@
   function foliage(r,p,random) {
     const h=p.h||7,w=p.w||h*.58,d=p.d||w;
     if(p.kind==='bush'){
-      for(let i=0;i<8;i++){
+      for(let i=0;i<5;i++){
         const a=i*2.39996, radius=.12+.17*random();
-        r.sphere(Math.cos(a)*w*radius,h*(.34+random()*.18),Math.sin(a)*d*radius,
-          w*(.37+random()*.21),h*(.50+random()*.40),d*(.37+random()*.22),
+        r.crown(Math.cos(a)*w*radius,h*(.34+random()*.18),Math.sin(a)*d*radius,
+          w*(.52+random()*.23),h*(.63+random()*.33),d*(.52+random()*.19),
           ['leafShadow','hedge','leaf','leafSun'][i%4],a);
       }
       return;
     }
     r.cylinder(0,h*.29,0,w*.083,w*.041,h*.58,'trunk',7);
     if(p.kind==='pine'){
-      for(let tier=0;tier<5;tier++){
-        const level=.20+tier*.14, radius=w*(.5-tier*.075), span=h*(.39-tier*.045);
-        r.cylinder(0,h*level+span*.5,0,radius,radius*.04,span,['needles','spruce','needles','spruce','spruceSun'][tier],7,tier*.47);
-        for(let j=0;j<4;j++){
-          const a=j*halfPi+tier*.61,reach=radius*.45;
+      for(let tier=0;tier<4;tier++){
+        const level=.19+tier*.178, radius=w*(.51-tier*.105), span=h*(.45-tier*.053);
+        r.cylinder(0,h*level+span*.5,0,radius,radius*.04,span,['needles','spruce','spruce','spruceSun'][tier],7,tier*.47);
+        for(let j=0;j<3;j++){
+          const a=j*TAU/3+tier*.61,reach=radius*.45;
           r.cylinder(Math.cos(a)*reach,h*level+span*.27,Math.sin(a)*reach,
             radius*.46,.02,span*.58,j%3?'spruce':'needles',5,a);
         }
@@ -219,20 +219,16 @@
       return;
     }
     const spread=1+random()*.18, oak=(p.variant||0)%2===0;
-    for(let i=0;i<6;i++){
-      const a=i*2.39996+random()*.35, reach=.15+random()*.15;
-      const ex=Math.cos(a)*w*reach*spread,ez=Math.sin(a)*d*reach,ey=h*(.53+random()*.16);
-      taper(r,[0,h*(.24+random()*.13),0],[ex,ey,ez],w*.038,w*.016,'trunk',6);
-      const drift=(random()-.5)*w*.15;
-      r.sphere(ex,ey+h*.035,ez,w*(.39+random()*.19),h*(.20+random()*.16),d*(.41+random()*.21),
-        i%3===0?'leafShadow':'leaf',a,random()*.2-.1,random()*.38-.19);
-      r.sphere(ex*.79+drift,ey+h*.13,ez*.8,w*.42,h*(oak?.21:.26),d*.42,
-        i%2?'leaf':'leafSun',a,0,.10);
-      r.sphere(ex*1.29,ey+h*.075,ez*1.29,w*(oak?.34:.31),h*(oak?.15:.21),d*.32,
-        i%3===1?'leafSun':'leaf',a,.14,-.19);
+    for(let i=0;i<5;i++){
+      const a=i*TAU/5+random()*.26, reach=.20+random()*.095;
+      const ex=Math.cos(a)*w*reach*spread,ez=Math.sin(a)*d*reach,ey=h*(.57+random()*.09);
+      taper(r,[0,h*(.23+random()*.11),0],[ex,ey,ez],w*.043,w*.019,'trunk',6);
+      r.crown(ex,ey+h*.044,ez,w*(.47+random()*.15),h*(oak?.35:.42),d*(.51+random()*.13),
+        i%3===0?'leafShadow':'leaf',a,random()*.12-.06,random()*.36-.18);
+      if(i%2===0)r.crown(ex*.74,ey+h*.16,ez*.74,w*.48,h*(oak?.22:.27),d*.49,'leafSun',a+.52,0,.11);
     }
-    r.sphere(-w*.07,h*.826,d*.03,w*.48,h*.285,d*.45,'leafSun',.3,-.06,.17);
-    r.sphere(w*.12,h*.851,-d*.07,w*.37,h*(oak?.17:.24),d*.34,'leaf',.83,.12,-.18);
+    r.crown(-w*.07,h*.826,d*.03,w*.48,h*.285,d*.45,'leafSun',.3,-.06,.17);
+    r.crown(w*.12,h*.851,-d*.07,w*.37,h*(oak?.17:.24),d*.34,'leaf',.83,.12,-.18);
   }
   function fence(r,p) {
     const w=p.w||4,h=p.h||1.12;

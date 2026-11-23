@@ -5,16 +5,16 @@
     'land-cover', 'worn-plaster', 'interior-plaster', 'corrugated', 'slate-camo', 'dune-camo',
     'shutter', 'fissure-a', 'asphalt', 'corrugated-paint', 'concrete', 'fissure-b'];
   const groundColors = {
-    meadow: ['#81945d','grass'], grass: ['#778e55','grass'], earth: ['#897758','dirt'],
-    dirt: ['#ad9974','dirt'], orchard: ['#818751','grass'], crop: ['#c1a459','crop'],
-    gravel: ['#a2977d','gravel'], road: ['#b5a183','dirt'], verge: ['#8b8e67','grass'],
+    meadow: ['#84a967','grass'], grass: ['#769e61','grass'], earth: ['#9e805f','dirt'],
+    dirt: ['#bb9769','dirt'], orchard: ['#789b55','grass'], crop: ['#d9b45f','crop'],
+    gravel: ['#acaa9a','gravel'], road: ['#c5a276','dirt'], verge: ['#859d69','grass'],
     rut: ['#a08a6b','gravel'], stone: ['#8c8775','stone'], bark: ['#615744','bark'],
-    wood: ['#92744f','wood'], plaster: ['#b6aa91','plaster'], leaves: ['#68714a','leaves'],
-    metal: ['#50554f','metal'], brick: ['#9c735d','brick'], roof: ['#7d6355','roof'],
+    wood: ['#a87b52','wood'], plaster: ['#b6aa91','plaster'], leaves: ['#5e875a','leaves'],
+    metal: ['#50554f','metal'], brick: ['#b67559','brick'], roof: ['#92735e','roof'],
     cloth: ['#777456','cloth'], sandbag: ['#a69a73','sandbag'], glass: ['#869697','glass'],
-    dryGrass: ['#ab9662','grass'], darkGrass: ['#758050','grass'],
-    stubble: ['#b0a063','grass'], wildGrass: ['#788049','grass'],
-    distantTree: ['#59684e','leaves'], distantTrunk: ['#6e6853','bark']
+    dryGrass: ['#bba568','grass'], darkGrass: ['#65885b','grass'],
+    stubble: ['#baa15d','grass'], wildGrass: ['#719454','grass'],
+    distantTree: ['#58796a','leaves'], distantTrunk: ['#6e6853','bark']
   };
   function hash(x,y,k=0) {
     let h = Math.imul(x+17,374761393) + Math.imul(y+53,668265263) + Math.imul(k+91,1274126177) | 0;
@@ -64,6 +64,31 @@
         const x=.27*Math.cos(a),z=.27*Math.sin(a);
         const dx=.09*Math.cos(a+.8),dz=.09*Math.sin(a+.8);
         tri([x-dx,-.5,z-dz],[x+dx,-.5,z+dz],[x+b,.28+.05*i,z+.11],[0,.8,.6]);
+      }
+    }else if(type==='crown'||type==='crownFar'){
+      // Four staggered rings form broad, uneven planes. Flat face normals make
+      // silhouettes readable even when the small leaf marks have faded with distance.
+      const sides=type==='crown'?7:5;
+      const rings=[[-.49,.15],[-.27,.87],[.10,1.0],[.37,.63],[.49,.13]];
+      function point(j,i){
+        const k=(i+sides)%sides, ring=rings[j];
+        const angle=k*2*Math.PI/sides+(j%2)*.29;
+        const radial=.5*ring[1]*(.91+.12*Math.sin(k*2.71+j*.86));
+        return [Math.cos(angle)*radial,ring[0]+.022*Math.cos(k*2.3+j),Math.sin(angle)*radial];
+      }
+      function facet(a,b,c){
+        const u=b.map((n,k)=>n-a[k]),v=c.map((n,k)=>n-a[k]);
+        let normal=unit([u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]]);
+        if(normal[0]*a[0]+normal[1]*a[1]+normal[2]*a[2]<0)normal=normal.map(n=>-n);
+        tri(a,b,c,normal);
+      }
+      for(let i=0;i<sides;i++){
+        facet([0,-.50,0],point(0,i+1),point(0,i));
+        for(let j=0;j<rings.length-1;j++){
+          const a=point(j,i),b=point(j+1,i),c=point(j+1,i+1),d=point(j,i+1);
+          facet(a,b,c);facet(a,c,d);
+        }
+        facet([0,.50,0],point(rings.length-1,i),point(rings.length-1,i+1));
       }
     }else if(type==='sphere'||type==='lowSphere'){
       const rings=type==='sphere'?6:4, sides=type==='sphere'?10:7;
@@ -126,6 +151,7 @@ class Collector {
     }
     box(x,y,z,w,h,d,mat,yaw=0,pitch=0,roll=0){this._add('box',x,y,z,w,h,d,mat,yaw,pitch,roll);}
     gable(x,y,z,w,h,d,mat,yaw=0){this._add('gable',x,y,z,w,h,d,mat,yaw,0,0);}
+    crown(x,y,z,w,h,d,mat,yaw=0,pitch=0,roll=0){this._add('crown',x,y,z,w,h,d,mat,yaw,pitch,roll);}
     sphere(x,y,z,w,h,d,mat,yaw=0,pitch=0,roll=0){this._add('sphere',x,y,z,w,h,d,mat,yaw,pitch,roll);}
     cylinder(x,y,z,bottomRadius,topRadius,h,mat,sides=8,yaw=0,pitch=0,roll=0){
       const r=Math.max(.00001,Math.abs(bottomRadius),Math.abs(topRadius));

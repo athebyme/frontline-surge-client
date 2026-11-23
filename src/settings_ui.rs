@@ -47,10 +47,9 @@ impl Ui {
         let x = ((s.w - w) * 0.12).max(12.);
         let y = ((s.h - h) * 0.5).max(4.);
         s.rect(x, y, w, h, Color::new(0.055, 0.09, 0.10, 0.97));
-        s.border(x, y, w, h, EDGE);
-        s.rect(x, y, w, 3., GOLD);
+        s.menu_ribbon(x + 28., y + 66., w - 56.);
         let x = x + 28.;
-        s.text("Настройки", x, y + 51., 34., PAPER);
+        s.bold().text("Настройки", x, y + 51., 34., PAPER);
         let original = self.settings;
         let g = &mut self.settings.graphics;
         let levels = [

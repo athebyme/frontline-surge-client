@@ -8,6 +8,8 @@ CONTRACT_FILES = (
     "src/world_wire.rs",
     "src/arsenal.rs",
     "src/fracture.rs",
+    "src/rubble.rs",
+    "src/vehicle_gun.rs",
     "assets/level.json",
 )
 

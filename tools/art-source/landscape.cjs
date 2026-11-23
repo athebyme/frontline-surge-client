@@ -52,14 +52,17 @@ function writeMask(map,file){
   const base=colors.meadow,grass=colors.grass,stubble=colors.stubble;
   for(let j=0;j<height;j++)for(let i=0;i<width;i++){
     const x=left+(i+.5)*w/width,z=front+(j+.5)*d/height,k=(j*width+i)*4;
-    const parcels=noise(x*.015,z*.015,321),spotted=noise(x*.108,z*.108,789);
-    const gold=clamp((parcels-.44)*1.22,0,.49),shade=.97+(spotted-.49)*.115;
-    for(let c=0;c<3;c++)pixels[k+c]=Math.round((base[c]*(1-gold)+stubble[c]*gold)*shade+(grass[c]-base[c])*(1-parcels)*.19);
+    // Broad pasture swaths are painted in metres; individual blades belong to the atlas.
+    const parcels=noise(x*.014,z*.014,321);
+    const gold=clamp((parcels-.41)*.86,0,.36);
+    const swath=Math.floor((x*.88+z*.47)/6.4);
+    const cut=(swath&1)===0?1.026:.974;
+    for(let c=0;c<3;c++)pixels[k+c]=Math.round((base[c]*(1-gold)+stubble[c]*gold+(grass[c]-base[c])*(1-parcels)*.21)*cut);
   }
   function paint(p,isRoad){
     const paved=isRoad && (p.w>=8 || (p.w>=5.8 && Math.abs(p.x)<3 && Math.abs(p.z)<50));
     const kind=isRoad?(paved?'asphalt':'road'):p.kind||'grass';
-    const color=paved?[105,107,100]:(colors[kind]||colors.grass);
+    const color=paved?[89,103,109]:(colors[kind]||colors.grass);
     const ca=Math.cos(p.yaw||0),sa=Math.sin(p.yaw||0);
     const ex=Math.abs(ca)*p.w*.5+Math.abs(sa)*p.d*.5+1;
     const ez=Math.abs(sa)*p.w*.5+Math.abs(ca)*p.d*.5+1;
@@ -70,21 +73,27 @@ function writeMask(map,file){
       const dx=x-p.x,dz=z-p.z,u=dx*ca+dz*sa,v=-dx*sa+dz*ca;
       const edge=Math.min(p.w*.5-Math.abs(u),p.d*.5-Math.abs(v));
       if(edge<-.6)continue;
-      const rough=noise(x*.63,z*.63,7)*.58+noise(x*2.1,z*2.1,613)*.29;
+      const rough=paved?.17:noise(x*.71,z*.71,7)*.4;
       const alpha=clamp((edge-rough+.30)*2.15,0,1);if(!alpha)continue;
       let tint=1,mark=0;
       if(isRoad){
         const rut=Math.abs(Math.abs(u+.08*Math.sin(v*.34))-Math.min(1.25,p.w*.25));
-        tint=(1-(paved?.07:.14)*(1-clamp((rut-.07)*2.5,0,1)))*(.96+.08*noise(x*.62,z*.62,77));
+        tint=1-(paved?.035:.14)*(1-clamp((rut-.07)*2.5,0,1));
+        const run=v+p.d*.5,section=Math.floor(run/22);
+        // Cold resurfaced rectangles follow the carriageway and leave the painted line visible.
+        const side=hash(section,p.x,13)>.5?1:-1;
+        const patchU=(u*side)-p.w*.22,patchV=run%22-4;
+        if(paved && hash(section,p.z,54)>.56 && Math.abs(patchU)<.86 && Math.abs(patchV)<1.75
+            && Math.abs(patchU)+.45*Math.abs(patchV)<1.48)tint*=.88;
         if(paved && Math.abs(v)<p.d*.5-3.6){
           const dash=(v+p.d*.5)%9<4.1 && Math.abs(u)<.12;
           const edgeStripe=Math.abs(Math.abs(u)-(p.w*.5-.55))<.085;
-          mark=(dash||edgeStripe)?(.58+.19*noise(x*2,z*2,11)):0;
+          mark=(dash||edgeStripe)?.81:0;
         }
       }else if(kind==='crop'||kind==='earth'){
         tint=(.96+.08*noise(x*.12,z*.12,113))*(.94+.07*Math.pow(Math.abs(Math.cos(u*1.7)),3));
-      }else tint=.96+.08*noise(x*.12,z*.12,113);
-      for(let c=0;c<3;c++)pixels[k+c]=Math.round(pixels[k+c]*(1-alpha)+(color[c]*tint*(1-mark)+[204,203,179][c]*mark)*alpha);
+      }else tint=.98+.035*noise(x*.048,z*.048,113);
+      for(let c=0;c<3;c++)pixels[k+c]=Math.round(pixels[k+c]*(1-alpha)+(color[c]*tint*(1-mark)+[225,218,183][c]*mark)*alpha);
       if(alpha>.5)pixels[k+3]=Math.min(252,(cover[kind]||0)*70);
     }
   }
@@ -135,7 +144,7 @@ function backdrop(r,map){
     const h=5.3+hash(i,3,74)*6.4,w=h*.48;
     r.cylinder(x,h*.25,z,.18,.11,h*.51,'distantTrunk',5);
     if(i%3)r.cylinder(x,h*.6,z,w*.49,0,h*.81,'distantTree',6,i);
-    else r._add('lowSphere',x,h*.65,z,w,h*.7,w*.94,'distantTree',i,0,0);
+    else r._add('crownFar',x,h*.65,z,w,h*.7,w*.94,'distantTree',i,0,0);
   }
 }
 function lod(r,p){
@@ -147,18 +156,30 @@ function lod(r,p){
         r.cylinder(0,h*.52,0,w*.52,.03,h*.62,'needles',6);
         r.cylinder(0,h*.75,0,w*.36,.01,h*.50,'spruce',6);
       }else{
-        r._add('lowSphere',0,h*.68,0,w*.91,h*.62,d*.91,'leaf',0,0,0);
-        r._add('lowSphere',w*.16,h*.78,d*.06,w*.655,h*.40,d*.65,'leafSun',.5,0,0);
+        r._add('crownFar',0,h*.68,0,w*.91,h*.62,d*.91,'leaf',0,0,0);
+        r._add('crownFar',w*.16,h*.78,d*.06,w*.655,h*.40,d*.65,'leafSun',.5,0,0);
       }
     }else if(p.kind==='bush'){
-      r._add('lowSphere',0,h*.52,0,w,h,d,'hedge',0,0,0);
+      r._add('crownFar',0,h*.52,0,w,h,d,'hedge',0,0,0);
     }else{
       const isBarn=p.kind==='barn',base=h*(isBarn?.63:.71);
       r.box(0,base*.5,0,w,base,d,isBarn?'barnBoard':'lime');
-      r.gable(0,base+(h-base)*.5,0,w+.34,h-base,d+.38,isBarn?'slate':'terracotta');
+      const slate=isBarn||p.variant%3===0;
+      r.gable(0,base+(h-base)*.5,0,w+.34,h-base,d+.38,slate?'slate':'terracotta');
+      r.box(0,base-.075,0,w+.16,.15,d+.16,isBarn?'darkWood':'creamPaint');
+      if(!isBarn)r.box(0,.27,0,w+.045,.54,d+.045,'concrete');
       for(const side of [-1,1]){
-        if(isBarn){r.box(0,base*.40,side*(d*.5+.02),w*.55,base*.76,.08,'darkWood');}
-        else for(const q of [-1,1])r.box(q*w*.26,base*.65,side*(d*.5+.02),w*.12,base*.25,.06,'quietGlass');
+        const front=side*(d*.5+.03);
+        if(isBarn){
+          r.box(0,base*.40,front,w*.55,base*.76,.08,'darkWood');
+          r.box(0,base*.79,front+side*.05,w*.60,.13,.13,'weatherWood');
+          r.box(0,base*.41,front+side*.05,.075,base*.73,.06,'weatherWood');
+        }else for(const q of [-1,1]){
+          const window=q*w*.26;
+          r.box(window,base*.65,front,w*.12,base*.25,.06,'quietGlass');
+          r.box(window,base*.52,front+side*.03,w*.16,.13,.12,'limestone');
+          r.box(window+w*.08,base*.65,front,w*.04,base*.26,.08,'shutters');
+        }
       }
       if(!isBarn)r.box(-w*.26,h*.83,-d*.24,.55,h*.32,.6,'brickwork');
     }
@@ -169,7 +190,7 @@ function lod(r,p){
 function hills(map) {
   const b=map.bounds,cx=(b.minX+b.maxX)*.5,cz=(b.minZ+b.maxZ)*.5;
   const rx=(b.maxX-b.minX)*.5,rz=(b.maxZ-b.minZ)*.5;
-  const positions=[],colors=[],normals=[],uv=[],tiles=[],indices=[];
+  const positions=[],uv=[],indices=[];
   const rings=[8,28,53,84,122,173,238,315],heights=[-.45,.9,5.6,13.7,22.8,14,19,5],num=112;
   for(let j=0;j<rings.length;j++){
     for(let i=0;i<num;i++){
@@ -179,26 +200,28 @@ function hills(map) {
       const x=cx+radius*dx,z=cz+radius*dz;
       const ripple=.67+.55*noise(x*.009,z*.009,31)+.34*Math.sin(a*5.+j*.37);
       const y=j===0?-.45:heights[j]*ripple;
-      positions.push(x,y,z);normals.push(0,0,0);uv.push(x*.26,z*.26);tiles.push(1);
-      const shade=.95+.13*noise(x*.016,z*.016,119);
-      colors.push(Math.round(112*shade),Math.round(130*shade),Math.round(90*shade),255);
+      positions.push(x,y,z);uv.push(x*.26,z*.26);
       if(j===rings.length-1)continue;
       const k=j*num+i,m=j*num+(i+1)%num;
       indices.push(k,m,k+num,m,m+num,k+num);
     }
   }
+  // Duplicate these distant vertices once at bake time. A shared normal would
+  // smooth away the ridge planes and make the backdrop look like a gradient.
+  const result={positions:[],normals:[],uv:[],colors:[],tiles:[],indices:[]};
   for(let a=0;a<indices.length;a+=3){
-    const aa=indices[a]*3,bb=indices[a+1]*3,cc=indices[a+2]*3;
-    const u=[positions[bb]-positions[aa],positions[bb+1]-positions[aa+1],positions[bb+2]-positions[aa+2]];
-    const v=[positions[cc]-positions[aa],positions[cc+1]-positions[aa+1],positions[cc+2]-positions[aa+2]];
+    const tri=indices.slice(a,a+3);
+    const pts=tri.map(i=>positions.slice(i*3,i*3+3));
+    const u=pts[1].map((n,k)=>n-pts[0][k]),v=pts[2].map((n,k)=>n-pts[0][k]);
     const n=[u[1]*v[2]-u[2]*v[1],u[2]*v[0]-u[0]*v[2],u[0]*v[1]-u[1]*v[0]];
-    const sign=n[1]<0?-1:1;
-    for(const k of [aa,bb,cc])for(let l=0;l<3;l++)normals[k+l]+=n[l]*sign;
+    const len=(Math.hypot(...n)||1)*(n[1]<0?-1:1),flat=n.map(x=>x/len);
+    const tint=.96+.055*hash(Math.floor(a/6),41,3);
+    for(let j=0;j<3;j++){
+      const i=tri[j];result.indices.push(result.tiles.length);
+      result.positions.push(...pts[j]);result.normals.push(...flat);result.uv.push(uv[i*2],uv[i*2+1]);
+      result.tiles.push(1);result.colors.push(Math.round(108*tint),Math.round(143*tint),Math.round(103*tint),255);
+    }
   }
-  for(let k=0;k<normals.length;k+=3){
-    const length=Math.hypot(normals[k],normals[k+1],normals[k+2])||1;
-    for(let l=0;l<3;l++)normals[k+l]/=length;
-  }
-  return {positions,colors,normals,uv,tiles,indices};
+  return result;
 }
 module.exports={writeMask,zone,detailCell,backdrop,lod,hills};

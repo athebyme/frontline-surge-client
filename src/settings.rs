@@ -60,10 +60,6 @@ impl Graphics {
         [1, 1024, 2048][self.shadows as usize]
     }
 
-    pub fn shadow_interval(self) -> f64 {
-        [0., 0.16, 0.08][self.shadows as usize]
-    }
-
     pub fn model_distance(self) -> f32 {
         [56., 93., 150.][self.models as usize]
     }

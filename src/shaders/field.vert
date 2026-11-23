@@ -5,6 +5,7 @@ attribute vec2 Texcoord;
 attribute vec4 Style;
 uniform mat4 ViewProjection;
 uniform mat4 Light;
+uniform mat4 MovingLight;
 uniform mat4 Model;
 varying vec3 world;
 varying vec3 local;
@@ -12,6 +13,7 @@ varying vec3 normal;
 varying vec2 uv;
 varying vec4 style;
 varying vec4 shadow;
+varying vec4 movingShadow;
 varying vec4 fieldEdge;
 void main(){
     vec4 p=Model*vec4(Position,1.);
@@ -21,5 +23,5 @@ void main(){
     }else{
         normal=normalize(mat3(Model)*Normal);uv=Texcoord;
     }
-    style=vec4(Style.rgb/255., Style.a);shadow=Light*p;gl_Position=ViewProjection*p;
+    style=vec4(Style.rgb/255., Style.a);shadow=Light*p;movingShadow=MovingLight*p;gl_Position=ViewProjection*p;
 }

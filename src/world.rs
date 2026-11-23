@@ -1,5 +1,5 @@
 //! Native village rendering. Geometry is uploaded once into immutable GPU buffers.
-//! Fields, buildings and parked vehicles share a texture atlas and a cached shadow map.
+//! Scenery and animated vehicles keep independent, texel-stable shadow maps.
 #[path = "world_fracture.rs"]
 mod fracture_mesh;
 #[path = "world_vehicles.rs"]
@@ -37,10 +37,11 @@ enum PageKind {
     Template,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 struct Placement {
     page: usize,
     transform: Mat4,
+    heat: f32,
 }
 
 /// A bounded view over the bundled, versioned art pack; no native pointer casts.
@@ -63,6 +64,7 @@ impl<'a> Cursor<'a> {
 struct SceneUniforms {
     vp: [f32; 16],
     light: [f32; 16],
+    moving_light: [f32; 16],
     model: [f32; 16],
     eye: [f32; 3],
     land_rect: [f32; 4],
@@ -71,6 +73,8 @@ struct SceneUniforms {
     sun: [f32; 3],
     lamps: [[f32; 4]; 4],
     graphics: [f32; 4],
+    heat: f32,
+    moving_casters: f32,
 }
 
 #[repr(C)]
@@ -109,7 +113,10 @@ pub struct World {
     pages: Vec<Page>,
     templates: HashMap<String, Vec<usize>>,
     hidden: Vec<bool>,
-    dynamic: Vec<Placement>,
+    instances: Vec<Placement>,
+    vehicle_instances: Vec<Placement>,
+    optical_body: std::ops::Range<usize>,
+    vehicle_casters: Vec<Placement>,
     has_lod: Vec<bool>,
     breakables: BreakableScenery,
     vehicles: HashMap<u64, VehiclePose>,
@@ -127,12 +134,10 @@ pub struct World {
     road_lights: Vec<(usize, Vec3)>,
     lamps: [[f32; 4]; 4],
     shadow_anchor: Vec3,
-    last_shadow_at: f64,
-    shadow: mq::TextureId,
-    shadow_pass: mq::RenderPass,
-    lighting: Mat4,
-    shadow_dirty: bool,
+    scenery_shadow: ShadowLayer,
+    vehicle_shadow: ShadowLayer,
     graphics: Graphics,
+    thermal: bool,
 }
 
 fn shader(
@@ -155,7 +160,21 @@ fn shader(
         .unwrap_or_else(|e| panic!("Village shader: {e}"))
 }
 
-fn shadow_target(gpu: &mut dyn mq::RenderingBackend, size: u32) -> (mq::TextureId, mq::RenderPass) {
+#[derive(Clone, Copy, PartialEq)]
+enum Pass {
+    Scene,
+    SceneryShadow,
+    VehicleShadow,
+}
+
+struct ShadowLayer {
+    texture: mq::TextureId,
+    pass: mq::RenderPass,
+    projection: Mat4,
+    dirty: bool,
+}
+
+fn shadow_target(gpu: &mut dyn mq::RenderingBackend, size: u32) -> ShadowLayer {
     let tex = mq::TextureParams {
         width: size,
         height: size,
@@ -168,7 +187,12 @@ fn shadow_target(gpu: &mut dyn mq::RenderingBackend, size: u32) -> (mq::TextureI
         format: mq::TextureFormat::Depth,
         ..tex
     });
-    (shadow, gpu.new_render_pass(shadow, Some(shadow_depth)))
+    ShadowLayer {
+        texture: shadow,
+        pass: gpu.new_render_pass(shadow, Some(shadow_depth)),
+        projection: Mat4::IDENTITY,
+        dirty: true,
+    }
 }
 
 impl World {
@@ -190,6 +214,7 @@ impl World {
             &[
                 ("ViewProjection", Matrix),
                 ("Light", Matrix),
+                ("MovingLight", Matrix),
                 ("Model", Matrix),
                 ("Eye", Float3),
                 ("LandRect", Float4),
@@ -201,8 +226,10 @@ impl World {
                 ("LampC", Float4),
                 ("LampD", Float4),
                 ("Graphics", Float4),
+                ("Heat", Float1),
+                ("MovingCasters", Float1),
             ],
-            &["Atlas", "ShadowMap", "LandCover"],
+            &["Atlas", "ShadowMap", "LandCover", "MovingShadowMap"],
         );
         let depth_shader = shader(
             gpu,
@@ -294,7 +321,8 @@ impl World {
             ),
             images: vec![],
         };
-        let (shadow, shadow_pass) = shadow_target(gpu, graphics.shadow_size());
+        let scenery_shadow = shadow_target(gpu, graphics.shadow_size());
+        let vehicle_shadow = shadow_target(gpu, graphics.shadow_size());
         assert_eq!(&TERRAIN[..4], b"FZQ2", "Unknown compressed map");
         let expected = u32::from_le_bytes(TERRAIN[4..8].try_into().unwrap()) as usize;
         let art = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&TERRAIN[8..], expected)
@@ -380,7 +408,6 @@ impl World {
         ));
         templates.insert("barricade".into(), (first..pages.len()).collect());
         let sky = SkyState::at(0.);
-        let lighting = light_camera(Vec3::ZERO, sky.key_light());
         let level: Value =
             serde_json::from_str(include_str!("../assets/level.json")).expect("Bundled level");
         let props = level["props"].as_array().expect("map props");
@@ -410,7 +437,10 @@ impl World {
             pages,
             templates,
             hidden: vec![false; prop_count],
-            dynamic: Vec::new(),
+            instances: Vec::new(),
+            vehicle_instances: Vec::new(),
+            optical_body: 0..0,
+            vehicle_casters: Vec::new(),
             has_lod,
             breakables,
             vehicles: HashMap::new(),
@@ -422,19 +452,25 @@ impl World {
             road_lights,
             lamps: [[0.; 4]; 4],
             shadow_anchor: Vec3::splat(f32::INFINITY),
-            last_shadow_at: -1.,
             scene_pipeline,
             depth_pipeline,
             preview_pipeline,
             sky_pipeline,
             sky_bindings,
             atlas,
-            shadow,
-            shadow_pass,
-            lighting,
-            shadow_dirty: true,
+            scenery_shadow,
+            vehicle_shadow,
             graphics,
+            thermal: false,
         }
+    }
+
+    pub fn set_thermal(&mut self, thermal: bool) {
+        // Moving casters may have changed while the thermal receiver ignored shadows.
+        if self.thermal && !thermal {
+            self.vehicle_shadow.dirty = true;
+        }
+        self.thermal = thermal;
     }
 
     pub fn daylight(&self) -> f32 {
@@ -443,7 +479,11 @@ impl World {
 
     fn place(&self, key: &str, transform: Mat4, out: &mut Vec<Placement>) {
         if let Some(pages) = self.templates.get(key) {
-            out.extend(pages.iter().map(|&page| Placement { page, transform }));
+            out.extend(pages.iter().map(|&page| Placement {
+                page,
+                transform,
+                heat: 0.,
+            }));
         }
     }
     fn place_team_flag(&self, item: &Value, at: Mat4, out: &mut Vec<Placement>) {
@@ -454,7 +494,7 @@ impl World {
         };
         self.place(key, at, out);
     }
-    fn sync(&mut self, state: Option<&Value>, eye: Vec3, motion: &crate::motion::Motion) {
+    fn sync(&mut self, state: Option<&Value>, eye: Vec3, motion: &crate::motion::Motion) -> bool {
         let round = state.and_then(|s| s["round"].as_u64());
         if self.round != round || state.is_none() {
             self.vehicles.clear();
@@ -495,7 +535,11 @@ impl World {
                     let reference = template_size(kind);
                     let transform = template_model(p, kind, reference);
                     for &page in indices {
-                        next_dynamic.push(Placement { page, transform });
+                        next_dynamic.push(Placement {
+                            page,
+                            transform,
+                            heat: 0.,
+                        });
                     }
                     if matches!(kind, "refinery" | "garage" | "workshop") {
                         self.place_team_flag(
@@ -539,6 +583,8 @@ impl World {
                 }
             }
         }
+        let mut next_vehicles = Vec::new();
+        self.optical_body = 0..0;
         if let Some(vehicles) = state.and_then(|s| s["vehicles"].as_array()) {
             let mut current = std::collections::HashSet::with_capacity(vehicles.len());
             for v in vehicles {
@@ -575,26 +621,27 @@ impl World {
                     Quat::from_rotation_y(std::f32::consts::PI - now.yaw),
                     now.pos,
                 );
+                let vehicle_start = next_vehicles.len();
                 if wreck {
-                    self.place(&format!("wreck_{key}"), transform, &mut next_dynamic);
+                    self.place(&format!("wreck_{key}"), transform, &mut next_vehicles);
                 } else {
                     let team = if v["team"].as_str() == Some("red") {
                         "red"
                     } else {
                         "blue"
                     };
-                    self.place(&format!("{key}_{team}"), transform, &mut next_dynamic);
+                    self.place(&format!("{key}_{team}"), transform, &mut next_vehicles);
                     if let Some(mount) = crate::vehicle_camera::GunMount::for_vehicle(key) {
                         let pitch = crate::vehicle_camera::gun_pitch(v, state, motion);
                         let turret = mount.turret(now.pos, now.yaw, now.turret);
-                        self.place(&format!("{key}_turret_{team}"), turret, &mut next_dynamic);
+                        self.place(&format!("{key}_turret_{team}"), turret, &mut next_vehicles);
                         self.place(
                             &format!("{key}_barrel_{team}"),
                             mount.barrel(turret, pitch),
-                            &mut next_dynamic,
+                            &mut next_vehicles,
                         );
                     }
-                    self.place_drivetrain(key, now, transform, &mut next_dynamic);
+                    self.place_drivetrain(key, now, transform, &mut next_vehicles);
                     if v["driver"].is_number() {
                         let front = match key {
                             "mbt" | "apc" => 2.85,
@@ -611,7 +658,7 @@ impl World {
                             self.place(
                                 &format!("{key}_{kit}_{level}"),
                                 transform,
-                                &mut next_dynamic,
+                                &mut next_vehicles,
                             );
                         }
                     }
@@ -629,7 +676,7 @@ impl World {
                             self.place(
                                 "freight",
                                 transform * Mat4::from_translation(offset),
-                                &mut next_dynamic,
+                                &mut next_vehicles,
                             );
                         }
                     }
@@ -641,8 +688,21 @@ impl World {
                     self.place_team_flag(
                         v,
                         transform * Mat4::from_translation(flag_pos),
-                        &mut next_dynamic,
+                        &mut next_vehicles,
                     );
+                }
+                let heat = if wreck {
+                    0.22
+                } else if v["driver"].is_number() {
+                    0.86
+                } else {
+                    0.57
+                };
+                for piece in &mut next_vehicles[vehicle_start..] {
+                    piece.heat = heat;
+                }
+                if motion.optic_vehicle == Some(id) {
+                    self.optical_body = vehicle_start..next_vehicles.len();
                 }
             }
             self.vehicles.retain(|id, _| current.contains(id));
@@ -659,11 +719,16 @@ impl World {
         for (target, (position, radius)) in self.lamps.iter_mut().zip(local_lights) {
             *target = [position.x, position.y, position.z, radius];
         }
-        if self.hidden != next_hidden || self.dynamic != next_dynamic {
-            self.shadow_dirty = true;
+        if self.hidden != next_hidden || self.instances != next_dynamic {
+            self.scenery_shadow.dirty = true;
             self.hidden = next_hidden;
-            self.dynamic = next_dynamic;
+            self.instances = next_dynamic;
         }
+        let vehicles_changed = self.vehicle_instances != next_vehicles;
+        if vehicles_changed {
+            self.vehicle_instances = next_vehicles;
+        }
+        vehicles_changed
     }
 
     pub fn set_graphics(&mut self, graphics: Graphics) {
@@ -674,52 +739,64 @@ impl World {
             let mut gl = unsafe { get_internal_gl() };
             gl.flush();
             let gpu = gl.quad_context;
-            let (texture, pass) = shadow_target(gpu, graphics.shadow_size());
-            // The native GL backend releases both attachments with their framebuffer.
-            gpu.delete_render_pass(self.shadow_pass);
-            self.shadow = texture;
-            self.shadow_pass = pass;
-            self.last_shadow_at = -1.;
+            for layer in [&mut self.scenery_shadow, &mut self.vehicle_shadow] {
+                gpu.delete_render_pass(layer.pass);
+                *layer = shadow_target(gpu, graphics.shadow_size());
+            }
+            self.solar_slot = -1;
         }
-        self.shadow_dirty = true;
+        if graphics.models != self.graphics.models {
+            self.scenery_shadow.dirty = true;
+        }
         self.graphics = graphics;
     }
 
-    fn submit(&self, gpu: &mut dyn mq::RenderingBackend, vp: Mat4, eye: Vec3, shadow_pass: bool) {
+    fn submit(&self, gpu: &mut dyn mq::RenderingBackend, vp: Mat4, eye: Vec3, pass: Pass) {
+        let shadow_pass = pass != Pass::Scene;
         let texture_set = [
             self.atlas.raw_miniquad_id(),
-            self.shadow,
+            self.scenery_shadow.texture,
             self.land_cover.raw_miniquad_id(),
+            self.vehicle_shadow.texture,
         ];
         let samples: &[mq::TextureId] = if shadow_pass { &[] } else { &texture_set };
         let mut last_model = None;
-        let mut draw = |p: &Page, model: Mat4, fade: f32| {
-            if last_model != Some((model, fade)) {
+        let mut draw = |p: &Page, model: Mat4, fade: f32, heat: f32| {
+            if last_model != Some((model, fade, heat)) {
                 if shadow_pass {
                     gpu.apply_uniforms(mq::UniformsSource::table(&ShadowUniforms {
-                        light: self.lighting.to_cols_array(),
+                        light: vp.to_cols_array(),
                         model: model.to_cols_array(),
                     }));
                 } else {
                     gpu.apply_uniforms(mq::UniformsSource::table(&SceneUniforms {
                         vp: vp.to_cols_array(),
-                        light: self.lighting.to_cols_array(),
+                        light: self.scenery_shadow.projection.to_cols_array(),
+                        moving_light: self.vehicle_shadow.projection.to_cols_array(),
                         model: model.to_cols_array(),
                         eye: eye.to_array(),
                         land_rect: self.land_rect,
                         fade,
-                        sky_state: self.sky.uniforms(),
+                        sky_state: self.sky.uniforms(self.thermal),
                         sun: self.sky.sun.to_array(),
                         lamps: self.lamps,
                         graphics: self.graphics.shader(),
+                        heat,
+                        moving_casters: if self.vehicle_casters.is_empty() { 0. } else { 1. },
                     }));
                 }
-                last_model = Some((model, fade));
+                last_model = Some((model, fade, heat));
             }
             gpu.apply_bindings_from_slice(&[p.vertices], p.indices, samples);
             gpu.draw(0, p.count, 1);
         };
-        let planes = frustum(if shadow_pass { self.lighting } else { vp });
+        if pass == Pass::VehicleShadow {
+            for placed in &self.vehicle_casters {
+                draw(&self.pages[placed.page], placed.transform, 1., 0.);
+            }
+            return;
+        }
+        let planes = frustum(vp);
         let foliage_range_sq = self.graphics.foliage_distance().powi(2);
         let model_range_sq = self.graphics.model_distance().powi(2);
         for p in &self.pages {
@@ -748,25 +825,28 @@ impl World {
             if !in_frustum(&planes, p.low, p.high) {
                 continue;
             }
-            draw(p, Mat4::IDENTITY, 1.);
+            draw(p, Mat4::IDENTITY, 1., 0.);
         }
-        self.breakables
-            .visit(&planes, eye, shadow_pass, model_range_sq, &mut draw);
-        for placed in &self.dynamic {
+        self.breakables.visit(
+            &planes,
+            eye,
+            shadow_pass,
+            model_range_sq,
+            &mut |p, m, fade| draw(p, m, fade, 0.),
+        );
+        let vehicles = if shadow_pass {
+            &[][..]
+        } else {
+            &self.vehicle_instances
+        };
+        let exterior = vehicles
+            .iter()
+            .enumerate()
+            .filter_map(|(i, p)| (!self.optical_body.contains(&i)).then_some(p));
+        for placed in self.instances.iter().chain(exterior) {
             let p = &self.pages[placed.page];
-            let center = placed.transform.transform_point3((p.low + p.high) * 0.5);
-            let radius = (p.high - p.low).length()
-                * 0.5
-                * placed
-                    .transform
-                    .x_axis
-                    .truncate()
-                    .length()
-                    .max(placed.transform.z_axis.truncate().length())
-                    .max(1.);
-            let margin = Vec3::splat(radius);
-            if in_frustum(&planes, center - margin, center + margin) {
-                draw(p, placed.transform, 1.);
+            if placement_visible(p, placed.transform, &planes) {
+                draw(p, placed.transform, 1., placed.heat);
             }
         }
     }
@@ -781,24 +861,38 @@ impl World {
     ) {
         let elapsed = state.map_or(0., |s| number(s, "elapsed", 0.));
         self.sky = SkyState::at(elapsed);
-        self.sync(state, camera_pos, motion);
+        let vehicles_changed = self.sync(state, camera_pos, motion);
         let tick = get_time();
-        // Keep fine shadow texels near the active camera even at the remote motor pools.
-        // Snapping to metres avoids shimmering whilst walking and limits map refresh work.
+        let shadows_enabled = self.graphics.shadows != Tier::Low && !self.thermal;
+        // Cache static scenery within an eight metre neighbourhood. Recentring
+        // translates the light-space footprint by whole texels, even on diagonals.
         let anchor = vec3(
             (camera_pos.x / 8.).round() * 8.,
             0.,
             (camera_pos.z / 8.).round() * 8.,
         );
-        let moved = anchor != self.shadow_anchor;
-        // One shadow orientation per four server seconds. Sunlight, moonlight and sky
-        // remain continuous between cache updates.
-        let slot = (elapsed / 4.).floor() as i32;
-        if moved || slot != self.solar_slot {
-            self.solar_slot = slot;
-            self.lighting = light_camera(anchor, self.sky.key_light());
+        let solar_slot = (elapsed * 2.).floor() as i32;
+        if shadows_enabled && (anchor != self.shadow_anchor || solar_slot != self.solar_slot) {
+            self.solar_slot = solar_slot;
             self.shadow_anchor = anchor;
-            self.shadow_dirty = true;
+            let sun = SkyState::at(solar_slot as f32 * 0.5).key_light();
+            let size = self.graphics.shadow_size();
+            self.scenery_shadow.projection = light_camera(anchor, sun, 69., size);
+            self.vehicle_shadow.projection = light_camera(anchor, sun, 58., size);
+            self.scenery_shadow.dirty = true;
+            self.vehicle_shadow.dirty = true;
+        }
+        if shadows_enabled && (vehicles_changed || self.vehicle_shadow.dirty) {
+            let planes = frustum(self.vehicle_shadow.projection);
+            let visible = self
+                .vehicle_instances
+                .iter()
+                .filter(|p| placement_visible(&self.pages[p.page], p.transform, &planes));
+            if !visible.clone().eq(&self.vehicle_casters) {
+                self.vehicle_casters.clear();
+                self.vehicle_casters.extend(visible.copied());
+                self.vehicle_shadow.dirty = true;
+            }
         }
         {
             let mut gl = unsafe { get_internal_gl() };
@@ -807,21 +901,25 @@ impl World {
             let target = gl.quad_gl.get_active_render_pass();
             let gpu = gl.quad_context;
             if self.breakables.sync(state, gpu, tick) {
-                self.shadow_dirty = true;
+                self.scenery_shadow.dirty = true;
             }
-            if self.graphics.shadows != Tier::Low
-                && self.shadow_dirty
-                && (moved || tick - self.last_shadow_at >= self.graphics.shadow_interval())
-            {
-                gpu.begin_pass(
-                    Some(self.shadow_pass),
-                    mq::PassAction::clear_color(1., 1., 1., 1.),
-                );
-                gpu.apply_pipeline(&self.depth_pipeline);
-                self.submit(gpu, vp, camera_pos, true);
-                gpu.end_render_pass();
-                self.shadow_dirty = false;
-                self.last_shadow_at = tick;
+            if shadows_enabled {
+                for (pass, layer) in [
+                    (Pass::SceneryShadow, &self.scenery_shadow),
+                    (Pass::VehicleShadow, &self.vehicle_shadow),
+                ] {
+                    if layer.dirty {
+                        gpu.begin_pass(
+                            Some(layer.pass),
+                            mq::PassAction::clear_color(1., 1., 1., 1.),
+                        );
+                        gpu.apply_pipeline(&self.depth_pipeline);
+                        self.submit(gpu, layer.projection, camera_pos, pass);
+                        gpu.end_render_pass();
+                    }
+                }
+                self.scenery_shadow.dirty = false;
+                self.vehicle_shadow.dirty = false;
             }
             gpu.begin_pass(target, mq::PassAction::Nothing);
             gpu.apply_pipeline(&self.sky_pipeline);
@@ -829,12 +927,12 @@ impl World {
             gpu.apply_uniforms(mq::UniformsSource::table(&SkyUniforms {
                 inverse: vp.inverse().to_cols_array(),
                 time: (elapsed % 10000.) + (get_time() % 1.) as f32 * 0.01,
-                sky_state: self.sky.uniforms(),
+                sky_state: self.sky.uniforms(self.thermal),
                 sun: self.sky.sun.to_array(),
             }));
             gpu.draw(0, 3, 1);
             gpu.apply_pipeline(&self.scene_pipeline);
-            self.submit(gpu, vp, camera_pos, false);
+            self.submit(gpu, vp, camera_pos, Pass::Scene);
             gpu.end_render_pass();
         }
         moving::draw_shells(state, camera_pos);
@@ -871,6 +969,21 @@ impl World {
             gpu.draw(0, page.count, 1);
         }
         gpu.end_render_pass();
+        // Mark the physical meeting point above the wall, even when the seam
+        // below it lies between two touching opaque faces.
+        if let Some(point) = p["snapPoint"].as_array().filter(|v| v.len()==3) {
+            let x = point[0].as_f64().unwrap_or(0.) as f32;
+            let z = point[2].as_f64().unwrap_or(0.) as f32;
+            let height = number(p,"y",0.) + number(p,"h",1.33);
+            let color = if p["valid"] == true {
+                Color::from_rgba(255,205,100,255)
+            } else {
+                Color::from_rgba(250,102,76,255)
+            };
+            let center = vec3(x,height+0.12,z);
+            draw_cube(center, vec3(0.046,0.24,0.046), None, color);
+            draw_cube(center + Vec3::Y*0.10, vec3(0.21,0.035,0.21), None, color);
+        }
     }
 }
 
@@ -915,13 +1028,34 @@ impl SkyState {
         };
         vec3(s.x, s.y.max(0.14), s.z).normalize()
     }
-    fn uniforms(&self) -> [f32; 4] {
-        [self.day, self.twilight, self.moon, 0.]
+    fn uniforms(&self, thermal: bool) -> [f32; 4] {
+        [
+            self.day,
+            self.twilight,
+            self.moon,
+            if thermal { 2. } else { 0. },
+        ]
     }
 }
-fn light_camera(anchor: Vec3, sun: Vec3) -> Mat4 {
-    Mat4::orthographic_rh_gl(-69., 69., -69., 69., 0.1, 220.)
-        * Mat4::look_at_rh(anchor + sun * 104., anchor, Vec3::Y)
+fn light_camera(anchor: Vec3, sun: Vec3, radius: f32, resolution: u32) -> Mat4 {
+    let basis = Mat4::look_to_rh(Vec3::ZERO, -sun, Vec3::Y);
+    let mut center = basis.transform_point3(anchor);
+    let texel = 2. * radius / resolution as f32;
+    center.x = (center.x / texel).round() * texel;
+    center.y = (center.y / texel).round() * texel;
+    center.z += 104.;
+    Mat4::orthographic_rh_gl(-radius, radius, -radius, radius, 0.1, 220.)
+        * Mat4::from_translation(-center)
+        * basis
+}
+
+fn placement_visible(p: &Page, model: Mat4, planes: &[Vec4; 6]) -> bool {
+    let center = model.transform_point3((p.low + p.high) * 0.5);
+    let half = (p.high - p.low) * 0.5;
+    let bounds = model.x_axis.truncate().abs() * half.x
+        + model.y_axis.truncate().abs() * half.y
+        + model.z_axis.truncate().abs() * half.z;
+    in_frustum(planes, center - bounds, center + bounds)
 }
 fn number(p: &Value, key: &str, default: f32) -> f32 {
     p.get(key)
@@ -969,11 +1103,7 @@ fn prop_model(p: &Value, scale: Vec3) -> Mat4 {
     Mat4::from_scale_rotation_translation(
         scale,
         Quat::from_rotation_y(-number(p, "yaw", 0.)),
-        vec3(
-            number(p, "x", 0.),
-            number(p, "y", 0.),
-            number(p, "z", 0.),
-        ),
+        vec3(number(p, "x", 0.), number(p, "y", 0.), number(p, "z", 0.)),
     )
 }
 
@@ -995,6 +1125,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn recentering_translates_static_and_vehicle_shadows_by_whole_texels() {
+        let world_point = vec3(13.87, 2.1, -42.3);
+        for hour in [0., 385., 840.] {
+            let sun = SkyState::at(hour).key_light();
+            for size in [1024, 2048] {
+                for radius in [58., 69.] {
+                    let pixel = |anchor| {
+                        let ndc = light_camera(anchor, sun, radius, size).transform_point3(world_point);
+                        (ndc.truncate() + Vec2::ONE) * size as f32 * 0.5
+                    };
+                    let delta = pixel(vec3(-8., 0., 16.)) - pixel(Vec3::ZERO);
+                    assert!((delta - delta.round()).abs().max_element() < 0.001);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn construction_preview_follows_support_and_server_dimensions() {
         let p = serde_json::json!({
             "kind": "barricade", "x": 3., "z": -4., "y": 1.33,
@@ -1005,6 +1153,9 @@ mod tests {
         let upper_edge = model.transform_point3(vec3(size.x / 2., size.y, 0.));
         assert!((upper_edge - vec3(3., 2.66, -4. + 1.55)).length() < 0.0001);
         let ground = serde_json::json!({"kind": "barricade", "h": 2.66});
-        assert_eq!(prop_model(&ground, Vec3::ONE).transform_point3(Vec3::ZERO), Vec3::ZERO);
+        assert_eq!(
+            prop_model(&ground, Vec3::ONE).transform_point3(Vec3::ZERO),
+            Vec3::ZERO
+        );
     }
 }

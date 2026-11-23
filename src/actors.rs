@@ -62,6 +62,8 @@ struct Rig {
     parts: HashMap<String, Mesh>,
     original: HashMap<String, Vec<[u8; 4]>>,
     light_level: u8,
+    thermal: bool,
+    fabric: Texture2D,
 }
 fn read_array<const N: usize>(reader: &mut Cursor<&[u8]>) -> [u8; N] {
     let mut b = [0; N];
@@ -124,6 +126,8 @@ impl Rig {
             parts,
             original,
             light_level: 48,
+            thermal: false,
+            fabric: texture,
         }
     }
     fn set_daylight(&mut self, light: f32) {
@@ -132,20 +136,62 @@ impl Rig {
             return;
         }
         self.light_level = level;
-        let d = level as f32 / 48.;
-        let gains = [0.39 + 0.61 * d, 0.47 + 0.53 * d, 0.62 + 0.38 * d];
+        if !self.thermal {
+            self.update_colors();
+        }
+    }
+
+    fn set_thermal(&mut self, enabled: bool) {
+        if self.thermal == enabled {
+            return;
+        }
+        self.thermal = enabled;
+        for mesh in self.parts.values_mut() {
+            mesh.texture = if enabled {
+                None
+            } else {
+                Some(self.fabric.clone())
+            };
+        }
+        self.update_colors();
+    }
+
+    fn update_colors(&mut self) {
+        let d = self.light_level as f32 / 48.;
+        let gains = [0.090 + 0.910 * d, 0.116 + 0.884 * d, 0.157 + 0.843 * d];
         for (name, mesh) in &mut self.parts {
-            if name == "flash" || name.ends_with("/mark") {
-                continue;
-            }
-            for (v, base) in mesh.vertices.iter_mut().zip(&self.original[name]) {
-                for i in 0..3 {
-                    v.color[i] = (base[i] as f32 * gains[i]).round() as u8;
+            let person =
+                name.starts_with("a/") || name.starts_with("e/") || name.ends_with("_hand");
+            let exposed = name.ends_with("/head") || name.ends_with("_hand");
+            for (vertex, base) in mesh.vertices.iter_mut().zip(&self.original[name]) {
+                if self.thermal {
+                    let relief = base[1] as f32 / 255.;
+                    let skin = exposed && base[0] as u16 > base[2] as u16 + 22;
+                    let heat = if name == "flash" {
+                        255
+                    } else if skin {
+                        (217. + 28. * relief) as u8
+                    } else if person {
+                        (163. + 37. * relief) as u8
+                    } else {
+                        (47. + 35. * relief) as u8
+                    };
+                    vertex.color = [heat, heat, heat, base[3]];
+                } else if name == "flash" || name.ends_with("/mark") {
+                    vertex.color = *base;
+                } else {
+                    for i in 0..3 {
+                        vertex.color[i] = (base[i] as f32 * gains[i]).round() as u8;
+                    }
                 }
             }
         }
     }
+
     fn draw(&self, key: &str, transform: Mat4) {
+        if self.thermal && key.ends_with("/mark") {
+            return;
+        }
         if let Some(mesh) = self.parts.get(key) {
             with_transform(transform, || draw_mesh(mesh));
         }
@@ -375,6 +421,8 @@ fn draw_remote(rig: &Rig, r: &Remote, p: &Value, friend: bool, snapshot_age: f32
     let bind =
         translate(vec3(0.056, 0.005, -0.313)) * ry(0.315) * Mat4::from_scale(Vec3::splat(0.76));
     let posed = translate(vec3(0., 0.012, 0.031) * recoil) * bind * reload.weapon(0.78);
+    let launch = (num(p, "droneLaunch", 0.) - snapshot_age).max(0.);
+    let toss = ((0.92 - launch) / 0.32).clamp(0., 1.) * (launch / 0.60).min(1.);
     let gun_delta = posed * bind.inverse();
     for (left, wrist, upper, lower) in [
         (true, vec3(-0.061, -0.047, -0.431), parts[2], parts[3]),
@@ -388,12 +436,20 @@ fn draw_remote(rig: &Rig, r: &Remote, p: &Value, friend: bool, snapshot_age: f32
         } else {
             rest
         };
+        let target = if launch > 0. {
+            let hand = if left { vec3(0.06, -0.08, -0.34) } else { vec3(0.18, -0.05, -0.32) };
+            hand + vec3(0., toss * 0.19, -toss * 0.21)
+        } else {
+            target
+        };
         let offset = target - wrist;
         let (shoulder, elbow) = arm_pose(left, offset, 0.024 * reload.ready);
         rig.draw(upper, arms * shoulder);
         rig.draw(lower, arms * elbow);
     }
-    gun.draw(rig, arms * posed, recoil.max(reload.cycle), &reload);
+    if launch <= 0. {
+        gun.draw(rig, arms * posed, recoil.max(reload.cycle), &reload);
+    }
     if r.down == 0. {
         rig.draw(parts[6], root * translate(vec3(0., 2.05, 0.)));
         if recoil > 0.80 {
@@ -527,10 +583,10 @@ impl VehicleFlash {
         let pose = motion.vehicle(v);
         let turret = mount.turret(pose.position, pose.yaw, pose.turret);
         let pitch = crate::vehicle_camera::gun_pitch(v, Some(state), motion);
-        let tip = if self.cannon {
-            vec3(0., 0., 2.31)
+        let tip = if self.cannon && v["kind"] == "mbt" {
+            Vec3::from_array(mount.0.primary_tip)
         } else {
-            mount.mg_tip
+            Vec3::from_array(mount.0.mg_tip)
         };
         Some(mount.barrel(turret, pitch) * translate(tip) * ry(PI))
     }
@@ -620,6 +676,10 @@ impl Actors {
             rng: Rng(0x762a_19c5),
         }
     }
+    pub fn set_thermal(&mut self, enabled: bool) {
+        self.rig.set_thermal(enabled);
+    }
+
     pub fn set_daylight(&mut self, value: f32) {
         self.rig.set_daylight(value);
     }
@@ -774,8 +834,11 @@ impl Actors {
             }
             "shellImpact" => {
                 let hit = pos(e);
-                self.add_burst(hit, 1.13);
-                self.scatter(hit, e["impactMaterial"].as_str().unwrap_or("earth"), true);
+                self.impact_burst(
+                    hit,
+                    e["impactMaterial"].as_str().unwrap_or("earth"),
+                    if e["weapon"] == "apc_he" { 0.78 } else { 1.13 },
+                );
             }
             "vehicleImpact" if num(e, "strength", 0.) > 0.25 => {
                 self.scatter(pos(e), e["material"].as_str().unwrap_or("metal"), true);
@@ -784,7 +847,7 @@ impl Actors {
                 self.throw_time = 0.41;
             }
             "explosion" => {
-                self.add_burst(pos(e), 1.);
+                self.impact_burst(pos(e), "earth", 1.);
             }
             "destroy"
                 if !matches!(
@@ -800,6 +863,10 @@ impl Actors {
             }
             _ => {}
         }
+    }
+    fn impact_burst(&mut self, at: Vec3, material: &str, scale: f32) {
+        self.add_burst(at, scale);
+        self.scatter(at + Vec3::Y * 0.06, material, false);
     }
     fn scatter(&mut self, origin: Vec3, material: &str, impact: bool) {
         let metal = matches!(
@@ -828,6 +895,7 @@ impl Actors {
                 | "logs"
                 | "pole"
                 | "wood"
+                | "plank"
                 | "tower"
                 | "fence"
         );
@@ -835,6 +903,8 @@ impl Actors {
             [[100, 96, 85], [132, 99, 80]]
         } else if timber {
             [[159, 125, 83], [98, 77, 56]]
+        } else if matches!(material, "brick" | "tile") {
+            [[166, 94, 66], [121, 77, 60]]
         } else {
             [[168, 159, 139], [125, 120, 105]]
         };
@@ -1059,6 +1129,28 @@ impl Actors {
             vec4(0., 0., -0.979, 1.),
         );
         set_camera(&SightCamera(depth * projection));
+        let launch = num(p, "droneLaunch", 0.);
+        if launch > 0. {
+            let phase = (0.92 - launch).clamp(0., 0.92);
+            let lift = smooth((phase / 0.32).clamp(0., 1.));
+            let lower = smooth(((phase - 0.32) / 0.5).clamp(0., 1.));
+            let palm = vec3(0.13 - 0.027 * lift, -0.29 + 0.15 * lift - 0.28 * lower,
+                -0.47 - 0.19 * lift + 0.15 * lower);
+            let right = translate(palm) * rx(0.18 - 0.46 * lift)
+                * translate(-vec3(0.04, -0.05, -0.14));
+            let left = translate(palm + vec3(-0.12, -0.025 - 0.13 * lift, 0.02))
+                * translate(-vec3(-0.061, -0.082, -0.344));
+            self.rig.draw("right_hand", right);
+            self.rig.draw("left_hand", left);
+            if phase <= 0.32 {
+                crate::drone_view::draw_airframe(
+                    palm + vec3(-0.046, 0.042, -0.065), 0., 0.03,
+                    p["team"] == "blue", self.clock, 0.48,
+                );
+            }
+            set_default_camera();
+            return;
+        }
         gun.draw(&self.rig, tf, impulse.max(reload.cycle), &reload);
         let mut rest = if gun.body == "vx9" {
             vec3(0., 0., -0.013)

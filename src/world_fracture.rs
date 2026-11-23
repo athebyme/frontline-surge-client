@@ -7,6 +7,8 @@ use macroquad::prelude::*;
 use serde_json::Value;
 use std::collections::HashMap;
 
+#[path="world_rubble.rs"]
+mod rubble_field;
 const NONE: u16 = u16::MAX;
 const VERTEX_LIMIT: usize = 60_000;
 const MAX_FLYING: usize = 85;
@@ -104,11 +106,11 @@ fn tone(style: [u8; 4], factor: f32) -> [u8; 4] {
 }
 fn mat_style(mat: Material) -> [u8; 4] {
     match mat {
-        Material::Wood => [132, 102, 71, 4],
-        Material::Brick => [151, 93, 69, 5],
-        Material::Stone => [143, 137, 117, 7],
-        Material::Metal => [102, 110, 102, 9],
-        Material::Tile => [148, 91, 64, 8],
+        Material::Wood => [150, 111, 74, 4],
+        Material::Brick => [177, 101, 77, 5],
+        Material::Stone => [159, 158, 142, 7],
+        Material::Metal => [96, 114, 121, 9],
+        Material::Tile => [169, 96, 68, 8],
     }
 }
 impl Writer {
@@ -304,18 +306,18 @@ impl Building {
         let mut neighbors = Vec::with_capacity(cells.len());
         let mut parts = Vec::new();
         let plaster = if p["style"].as_str() == Some("dispatch") {
-            [165, 174, 162, 19]
+            [177, 202, 191, 19]
         } else {
             match variant % 3 {
-                0 => [179, 170, 146, 19],
-                1 => [195, 184, 158, 19],
-                _ => [185, 163, 139, 19],
+                0 => [221, 207, 178, 19],
+                1 => [225, 216, 192, 19],
+                _ => [215, 189, 154, 19],
             }
         };
         let shutter = match variant % 3 {
-            0 => [91, 115, 94, 24],
-            1 => [95, 112, 123, 24],
-            _ => [131, 96, 77, 24],
+            0 => [72, 126, 112, 24],
+            1 => [69, 111, 132, 24],
+            _ => [157, 96, 66, 24],
         };
         for (id, c) in cells.iter().enumerate() {
             if writer.vertices.len() > VERTEX_LIMIT - 800 {
@@ -326,7 +328,7 @@ impl Building {
             let local = Vec3::from_array(c.center);
             let block = Vec3::from_array(c.size);
             let mut adjacent = [NONE; 6];
-            let tint = 0.97 + 0.055 * random(id as u32 * 73 + variant);
+            let tint = 0.988 + 0.023 * random(id as u32 * 73 + variant);
             for (face, dir) in AXIS.iter().enumerate() {
                 let at = std::array::from_fn(|k| ix[k] + dir[k] * 2);
                 adjacent[face] = *map.get(&at).unwrap_or(&NONE);
@@ -347,25 +349,25 @@ impl Building {
                             && face != 3
                             && cottage =>
                     {
-                        style = [176, 164, 132, 20]
+                        style = [200, 190, 161, 20]
                     }
                     Material::Wood if barn && outer => {
                         style = if variant % 2 == 1 {
-                            [142, 88, 59, 4]
+                            [162, 99, 63, 4]
                         } else {
-                            [126, 100, 70, 4]
+                            [152, 116, 73, 4]
                         }
                     }
                     Material::Tile if face == 2 => {
                         style = if variant % 3 == 0 {
-                            [94, 105, 102, 8]
+                            [78, 102, 118, 8]
                         } else {
-                            [150, 90, 65, 8]
+                            [174, 98, 69, 8]
                         }
                     }
                     Material::Tile if face == 3 => style = [91, 72, 48, 3],
-                    Material::Metal if barn && face == 2 => style = [107, 116, 111, 21],
-                    Material::Stone if kind == "ruin" => style = [127, 125, 112, 7],
+                    Material::Metal if barn && face == 2 => style = [107, 128, 133, 21],
+                    Material::Stone if kind == "ruin" => style = [147, 149, 136, 7],
                     _ => {}
                 }
                 writer.quad(
@@ -408,7 +410,7 @@ impl Building {
                         writer.cuboid(
                             local + lip + Vec3::Y * (block.y * 0.5 - 0.052),
                             dim(span + 0.07, 0.10, 0.112),
-                            [185, 176, 148, 7],
+                            [211, 205, 178, 7],
                             id,
                         );
                     }
@@ -422,7 +424,7 @@ impl Building {
                         writer.cuboid(
                             local + lip - Vec3::Y * (block.y * 0.5 - 0.075),
                             dim(span - 0.012, 0.15, 0.13),
-                            [163, 155, 132, 7],
+                            [188, 181, 155, 7],
                             id,
                         );
                     }
@@ -606,6 +608,7 @@ pub(super) struct BreakableScenery {
     build_ids: Vec<u64>,
     chunk_meshes: Vec<Part>,
     chunks: Vec<Chunk>,
+    rubble: rubble_field::Rubble,
     round: Option<u64>,
     last_event: Option<u64>,
     last_time: f64,
@@ -644,6 +647,7 @@ impl BreakableScenery {
             build_ids: vec![],
             chunk_meshes,
             chunks: vec![],
+            rubble: Default::default(),
             round: None,
             last_event: None,
             last_time: 0.,
@@ -678,6 +682,7 @@ impl BreakableScenery {
         if self.round != round {
             self.clear_dynamic(gpu);
             self.chunks.clear();
+            self.rubble.clear(gpu);
             self.last_event = None;
             for b in self.authored.iter_mut().flatten() {
                 b.snapshot(&Value::Null, gpu);
@@ -686,6 +691,7 @@ impl BreakableScenery {
             changed = true;
         }
         if let Some(s) = state {
+            self.rubble.sync(s,self.last_event.is_some(),gpu,now);
             for p in s["propChanges"].as_array().into_iter().flatten() {
                 if let Some(b) = p["index"]
                     .as_u64()
@@ -859,6 +865,7 @@ impl BreakableScenery {
             }
         }
         if !shadow {
+            self.rubble.visit(planes,eye,draw);
             for c in &self.chunks {
                 if (c.pos - eye).length_squared() > 115. * 115.
                     || !in_frustum(planes, c.pos - Vec3::ONE, c.pos + Vec3::ONE)

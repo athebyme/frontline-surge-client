@@ -1,3 +1,18 @@
+Field audio (assets/field-audio.fsbk)
+The source recordings are dedicated to the public domain under CC0 1.0.
+  Kenney — Impact Sounds (https://kenney.nl/assets/impact-sounds) and RPG Audio (https://kenney.nl/assets/rpg-audio)
+  Félix Blume — https://freesound.org/s/136399/
+  cognito perceptu — https://freesound.org/s/46655/ and https://freesound.org/s/21187/
+  johanwestling — https://freesound.org/s/377786/
+  ajhartman42295 — https://freesound.org/s/668071/
+  unfa — https://freesound.org/s/613669/
+  LudwigMueller — https://freesound.org/s/329523/
+  fthgurdy — https://freesound.org/s/528944/
+  CC0 1.0 — https://creativecommons.org/publicdomain/zero/1.0/
+Edited, layered and mixed for Frontline Surge. See docs/audio.md for source titles.
+
+--------------------
+
 Frontline Surge — third-party components
 
 adler2 2.0.1 — 0BSD OR MIT OR Apache-2.0 — Jonas Schievink <jonasschievink@gmail.com>, oyvindln <oyvindln@users.noreply.github.com>

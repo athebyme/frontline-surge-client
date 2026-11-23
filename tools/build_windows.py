@@ -58,7 +58,8 @@ def notices(metadata, path, target):
             content = file.read_text(encoding="utf8", errors="replace").strip()
             if content:
                 groups[content].append(f"{name} — {file.name}")
-    sections = ["\n".join(summary)]
+    field_audio = (PROJECT / "tools/notices/field-audio.txt").read_text(encoding="utf8").strip()
+    sections = [field_audio, "\n".join(summary)]
     sections.extend("\n".join(names) + "\n\n" + text for text, names in groups.items())
     font = (PROJECT / "assets/FONT-LICENSE.txt").read_text(encoding="utf8")
     sections.append("User interface font\n\n" + font)

@@ -1,5 +1,4 @@
-//! Procedural field audio. Clips are generated once; the Windows device mixes
-//! multiple concurrent voices in small stereo PCM buffers without game-thread I/O.
+//! Recorded field audio. All voices and continuous sources share the same stereo bus.
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -26,8 +25,16 @@ enum Cue {
     ProductionStart,
     ProductionReady,
     Crash,
+    Apc,
+    ShellBlast,
+    TankLoader,
+    Tile,
+    Earth,
+    BootGround,
+    BootHard,
+    BootRubble,
 }
-const BANK: [Cue; 20] = [
+const BANK: [Cue; 28] = [
     Cue::Shot,
     Cue::Distant,
     Cue::Reload,
@@ -48,10 +55,18 @@ const BANK: [Cue; 20] = [
     Cue::ProductionStart,
     Cue::ProductionReady,
     Cue::Crash,
+    Cue::Apc,
+    Cue::ShellBlast,
+    Cue::TankLoader,
+    Cue::Tile,
+    Cue::Earth,
+    Cue::BootGround,
+    Cue::BootHard,
+    Cue::BootRubble,
 ];
 const COUNT: usize = BANK.len();
 #[cfg(any(target_os = "windows", test))]
-const RATE: usize = 22050;
+const RATE: usize = 32000;
 
 #[derive(Clone, Copy)]
 #[cfg_attr(not(any(target_os = "windows", test)), allow(dead_code))]
@@ -60,6 +75,8 @@ struct Trigger {
     gain: f32,
     pan: f32,
     priority: u8,
+    distance: f32,
+    offset: f32,
 }
 
 // The sample worker tracks the loudest nearby occupied vehicles. Audio rate is
@@ -73,6 +90,8 @@ struct Motor {
     pan: f32,
     level: f32,
 }
+#[cfg(any(target_os = "windows", test))]
+const ROTOR: u8 = 4;
 #[cfg(any(target_os = "windows", test))]
 fn motors_near(state: &Value, me: &Value) -> Vec<Motor> {
     let n = |v: &Value, k: &str| v[k].as_f64().unwrap_or(0.) as f32;
@@ -120,7 +139,116 @@ fn motors_near(state: &Value, me: &Value) -> Vec<Motor> {
     }
     result.sort_by(|a, b| b.level.total_cmp(&a.level));
     result.truncate(4);
+    // Hovering, newly tossed and remotely piloted craft are all physical emitters.
+    let mut rotors = Vec::new();
+    for d in state["drones"].as_array().into_iter().flatten() {
+        let Some(id) = d["id"].as_u64() else { continue };
+        if d["battery"].as_f64().is_some_and(|v| v <= 0.) {
+            continue;
+        }
+        let dx = n(d, "x") - n(me, "x");
+        let dy = n(d, "y") - n(me, "y");
+        let dz = n(d, "z") - n(me, "z");
+        let distance = dx.hypot(dz).hypot(dy);
+        if distance >= 55. {
+            continue;
+        }
+        let pan = if distance < 0.2 {
+            0.
+        } else {
+            (dx * yaw.cos() + dz * yaw.sin()) / distance * 0.87
+        };
+        let spool = 1. - n(d, "launchRemaining").clamp(0., 0.8);
+        let load = (n(d, "speed") / 12.).clamp(0., 1.) * 0.65
+            + (n(d, "vSpeed") / 4.).clamp(-1., 1.) * 0.37;
+        let level = 0.49 * spool * (1. - distance / 55.) / (1. + distance * 0.095);
+        rotors.push(Motor {
+            id,
+            kind: ROTOR,
+            speed: load,
+            pan,
+            level,
+        });
+    }
+    rotors.sort_by(|a, b| b.level.total_cmp(&a.level));
+    rotors.truncate(3);
+    result.extend(rotors);
     result
+}
+
+struct Steps {
+    roads: Vec<[f32; 6]>,
+    walkers: HashMap<u64, (f32, f32, f32)>,
+}
+impl Steps {
+    fn new() -> Self {
+        let level: Value =
+            serde_json::from_str(include_str!("../assets/level.json")).expect("bundled roads");
+        let roads = level["roads"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|r| {
+                let n = |k: &str| r[k].as_f64().unwrap_or(0.) as f32;
+                let (sin, cos) = n("yaw").sin_cos();
+                [n("x"), n("z"), n("w") * 0.5, n("d") * 0.5, sin, cos]
+            })
+            .collect();
+        Self {
+            roads,
+            walkers: HashMap::new(),
+        }
+    }
+    fn advance(&mut self, state: &Value, ear: &Value, local: u32) -> Vec<Trigger> {
+        let mut next = HashMap::new();
+        let mut effects = Vec::new();
+        for p in state["players"].as_array().into_iter().flatten() {
+            let Some(id) = p["id"].as_u64() else {
+                continue;
+            };
+            if p["alive"] != true || p["vehicleId"].is_number() || p["moving"] != true {
+                continue;
+            }
+            let (x, z) = (
+                p["x"].as_f64().unwrap_or(0.) as f32,
+                p["z"].as_f64().unwrap_or(0.) as f32,
+            );
+            let (lx, lz, mut travelled) = self.walkers.get(&id).copied().unwrap_or((x, z, 0.38));
+            let dist = (x - lx).hypot(z - lz);
+            let stride = if p["sprinting"] == true { 1.82 } else { 1.34 };
+            if dist >= 2.5 {
+                travelled = 0.;
+            } else {
+                travelled += dist;
+            }
+            if travelled >= stride {
+                travelled %= stride;
+                let road = self.roads.iter().any(|&[rx, rz, w, d, sin, cos]| {
+                    let (dx, dz) = (x - rx, z - rz);
+                    (dx * cos - dz * sin).abs() <= w && (dx * sin + dz * cos).abs() <= d
+                });
+                let cue = if p["looseFooting"] == true {
+                    Cue::BootRubble
+                } else if road {
+                    Cue::BootHard
+                } else {
+                    Cue::BootGround
+                };
+                if let Some(t) = place(
+                    cue,
+                    x - ear["x"].as_f64().unwrap_or(0.) as f32,
+                    z - ear["z"].as_f64().unwrap_or(0.) as f32,
+                    ear,
+                    id == local as u64,
+                ) {
+                    effects.push(t);
+                }
+            }
+            next.insert(id, (x, z, travelled));
+        }
+        self.walkers = next;
+        effects
+    }
 }
 
 // Factory progress has no discrete network event. Comparing consecutive snapshots
@@ -171,6 +299,8 @@ pub struct Sound {
     #[cfg(target_os = "windows")]
     motor_at: f64,
     last_cue: [f64; COUNT],
+    sampled: Option<f64>,
+    steps: Steps,
     #[cfg(target_os = "windows")]
     output: device::Output,
 }
@@ -184,6 +314,8 @@ impl Sound {
             #[cfg(target_os = "windows")]
             motor_at: f64::NEG_INFINITY,
             last_cue: [f64::NEG_INFINITY; COUNT],
+            sampled: None,
+            steps: Steps::new(),
             #[cfg(target_os = "windows")]
             output: device::Output::new(),
         }
@@ -191,6 +323,8 @@ impl Sound {
     pub fn clear(&mut self) {
         self.last_event = None;
         self.round = None;
+        self.sampled = None;
+        self.steps.walkers.clear();
         self.stations.last.clear();
         #[cfg(target_os = "windows")]
         {
@@ -200,12 +334,17 @@ impl Sound {
         #[cfg(target_os = "windows")]
         self.output.clear();
     }
-    pub fn update(&mut self, state: &Value, local_id: u32) {
+    pub fn update(&mut self, state: &Value, local_id: u32, listener: (f32, f32, f32, f32)) {
         let round = state["round"].as_u64();
         if self.round.is_some() && round != self.round {
             self.clear();
         }
         self.round = round;
+        let time = state["elapsed"].as_f64().unwrap_or(0.);
+        if self.sampled == Some(time) {
+            return;
+        }
+        self.sampled = Some(time);
         let Some(events) = state["events"].as_array() else {
             return;
         };
@@ -226,16 +365,29 @@ impl Sound {
         }) else {
             return;
         };
-        for effect in self.stations.changes(state, me) {
+        let ear = serde_json::json!({"id":local_id,"team":me["team"],"x":listener.0,"y":listener.1,"z":listener.2,"yaw":listener.3});
+        let footsteps = self.steps.advance(state, &ear, local_id);
+        for effect in self
+            .stations
+            .changes(state, &ear)
+            .into_iter()
+            .chain(footsteps)
+        {
             #[cfg(target_os = "windows")]
             self.output.enqueue(effect);
             #[cfg(not(target_os = "windows"))]
             let _ = effect;
         }
-        let time = state["elapsed"].as_f64().unwrap_or(0.);
         #[cfg(target_os = "windows")]
         if time - self.motor_at >= 0.075 {
-            self.output.motors(motors_near(state, me));
+            self.output.motors(
+                motors_near(state, &ear),
+                if me["vehicleId"].is_number() {
+                    0.028
+                } else {
+                    0.065
+                },
+            );
             self.motor_at = time;
         }
         for event in events {
@@ -243,12 +395,14 @@ impl Sound {
             if id <= cursor || time - event["at"].as_f64().unwrap_or(time) > 0.40 {
                 continue;
             }
-            if let Some(trigger) = from_event(event, me, local_id) {
-                let previous = &mut self.last_cue[trigger.cue as usize];
-                if time - *previous < 0.031 {
-                    continue;
-                }
-                *previous = time;
+            for trigger in [
+                from_event(event, &ear, local_id),
+                detail(event, &ear, local_id, time),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                self.last_cue[trigger.cue as usize] = time;
                 #[cfg(target_os = "windows")]
                 self.output.enqueue(trigger);
             }
@@ -272,17 +426,20 @@ fn from_event(event: &Value, me: &Value, local_id: u32) -> Option<Trigger> {
     let dz = origin("z", "ez") - me["z"].as_f64().unwrap_or(0.) as f32;
     let distance = dx.hypot(dz);
     let cue = match kind {
+        "tankFire" if event["weapon"] == "apc_he" => Cue::Apc,
         "tankFire" => Cue::Cannon,
-        "shellImpact" => Cue::Blast,
+        "shellImpact" if event["weapon"] == "apc_he" => Cue::Blast,
+        "shellImpact" => Cue::ShellBlast,
         "shot" if event["weapon"].as_str() == Some("vehicle_mg") => Cue::Mounted,
         "vehicleImpact" if event["strength"].as_f64().unwrap_or(0.) > 0.12 => Cue::Crash,
         "productionStart" => Cue::ProductionStart,
         "productionReady" => Cue::ProductionReady,
         "inventoryMove" if own => Cue::Harvest,
         "shot" if matches!(event["weapon"].as_str(), Some("tank" | "mbt")) => Cue::Cannon,
-        "shot" if distance > 18. && !own => Cue::Distant,
         "shot" if event["weapon"].as_str() == Some("vx9") => Cue::Smg,
         "shot" if event["weapon"].as_str() == Some("ar4") => Cue::Patrol,
+        "shot" if event["weapon"] == "mr7" => Cue::Shot,
+        "shot" if distance > 18. && !own => Cue::Distant,
         "shot" => Cue::Shot,
         "throw" => Cue::Throw,
         "explosion" => Cue::Blast,
@@ -337,13 +494,20 @@ fn from_event(event: &Value, me: &Value, local_id: u32) -> Option<Trigger> {
                 | "vehicleImpact"
                 | "productionReady"
         );
+    place(cue, dx, dz, me, centered)
+}
+
+fn place(cue: Cue, dx: f32, dz: f32, me: &Value, centered: bool) -> Option<Trigger> {
+    let distance = dx.hypot(dz);
     let range = match cue {
         Cue::Mounted => 130.,
         Cue::Crash => 58.,
         Cue::ProductionStart | Cue::ProductionReady => 27.,
-        Cue::Cannon => 200.,
+        Cue::Cannon | Cue::ShellBlast => 200.,
+        Cue::Apc => 160.,
+        Cue::TankLoader => 32.,
         Cue::Blast => 145.,
-        Cue::Masonry | Cue::Splinter | Cue::Metal => 52.,
+        Cue::Masonry | Cue::Splinter | Cue::Metal | Cue::Tile | Cue::Earth => 52.,
         Cue::Shot | Cue::Distant | Cue::Smg | Cue::Patrol => 110.,
         Cue::Debris => 65.,
         _ => 20.,
@@ -366,7 +530,14 @@ fn from_event(event: &Value, me: &Value, local_id: u32) -> Option<Trigger> {
         4
     } else if matches!(
         cue,
-        Cue::Blast | Cue::Cannon | Cue::Mounted | Cue::Shot | Cue::Smg | Cue::Patrol
+        Cue::Blast
+            | Cue::ShellBlast
+            | Cue::Cannon
+            | Cue::Apc
+            | Cue::Mounted
+            | Cue::Shot
+            | Cue::Smg
+            | Cue::Patrol
     ) {
         3
     } else if matches!(cue, Cue::Debris | Cue::Metal | Cue::Masonry | Cue::Splinter) {
@@ -379,357 +550,54 @@ fn from_event(event: &Value, me: &Value, local_id: u32) -> Option<Trigger> {
         gain,
         pan,
         priority,
+        distance: if centered { 0. } else { distance },
+        offset: 0.,
     })
 }
 
-#[cfg(any(target_os = "windows", test))]
-mod mixer {
-    use super::*;
-    use std::f32::consts::TAU;
-
-    fn pulse(t: f32, start: f32, rate: f32) -> f32 {
-        let age = t - start;
-        if age < 0. {
-            0.
-        } else {
-            (1. - (-age * 1700.).exp()) * (-age * rate).exp()
+fn detail(event: &Value, me: &Value, local: u32, now: f64) -> Option<Trigger> {
+    let coord = |p: &Value, key: &str| p[key].as_f64().unwrap_or(0.) as f32;
+    match event["type"].as_str()? {
+        "tankFire" if event["weapon"] != "apc_he" => {
+            let own = event["actor"].as_u64() == Some(local as u64);
+            let mut effect = place(
+                Cue::TankLoader,
+                coord(event, "x") - coord(me, "x"),
+                coord(event, "z") - coord(me, "z"),
+                me,
+                own,
+            )?;
+            effect.offset = (now - event["at"].as_f64().unwrap_or(now)).clamp(0., 0.4) as f32;
+            Some(effect)
         }
-    }
-    fn tone(t: f32, hz: f32) -> f32 {
-        (TAU * hz * t).sin()
-    }
-    fn make(cue: Cue) -> Vec<f32> {
-        let duration = match cue {
-            Cue::Shot => 0.40,
-            Cue::Distant => 0.53,
-            Cue::Reload => 0.34,
-            Cue::Harvest => 0.20,
-            Cue::Build => 0.30,
-            Cue::Debris => 0.53,
-            Cue::Hurt => 0.24,
-            Cue::Dry => 0.075,
-            Cue::Patrol => 0.27,
-            Cue::Smg => 0.19,
-            Cue::Cannon => 0.85,
-            Cue::Throw => 0.16,
-            Cue::Blast => 0.81,
-            Cue::Masonry => 0.40,
-            Cue::Splinter => 0.30,
-            Cue::Metal => 0.55,
-            Cue::Mounted => 0.30,
-            Cue::ProductionStart => 0.34,
-            Cue::ProductionReady => 0.51,
-            Cue::Crash => 0.39,
-        };
-        let frames = (duration * RATE as f32) as usize;
-        let mut seed = 73429u32 + cue as u32 * 7919;
-        let mut filtered = 0.;
-        let mut rumble = 0.;
-        (0..frames)
-            .map(|i| {
-                let t = i as f32 / RATE as f32;
-                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-                let noise = (seed >> 8) as f32 / 8388608. - 1.;
-                filtered += 0.32 * (noise - filtered);
-                rumble += 0.045 * (noise - rumble);
-                let click = noise - filtered;
-                let sample = match cue {
-                    Cue::Shot => {
-                        (click * 0.92 + filtered * 0.7) * pulse(t, 0., 64.)
-                            + (tone(t, 77.) * 0.30 + rumble * 1.7) * pulse(t, 0., 17.)
-                            + filtered * 0.38 * pulse(t, 0.071, 24.)
-                            + rumble * 0.65 * pulse(t, 0.126, 18.)
-                    }
-                    Cue::Distant => {
-                        (rumble * 2.7 + tone(t, 62.) * 0.18) * pulse(t, 0., 18.)
-                            + (rumble * 1.6 + filtered * 0.16) * pulse(t, 0.083, 12.)
-                    }
-                    Cue::Reload => {
-                        (click * 0.49 + tone(t, 1150.) * 0.12) * pulse(t, 0., 75.)
-                            + (filtered * 0.65 + tone(t, 263.) * 0.18) * pulse(t, 0.123, 41.)
-                            + (click * 0.64 + tone(t, 930.) * 0.12) * pulse(t, 0.234, 80.)
-                    }
-                    Cue::Harvest => {
-                        (tone(t, 129.) * 0.46 + filtered * 0.64) * pulse(t, 0., 31.)
-                            + click * 0.37 * pulse(t, 0.012, 47.)
-                    }
-                    Cue::Build => {
-                        (tone(t, 98.) * 0.35 + filtered * 0.57) * pulse(t, 0., 28.)
-                            + (tone(t, 660.) * 0.12 + click * 0.45) * pulse(t, 0.095, 61.)
-                    }
-                    Cue::Debris => {
-                        (rumble * 2.4 + tone(t, 59.) * 0.24) * pulse(t, 0., 11.)
-                            + filtered
-                                * (pulse(t, 0.037, 32.)
-                                    + 0.67 * pulse(t, 0.131, 27.)
-                                    + 0.50 * pulse(t, 0.223, 32.))
-                    }
-                    Cue::Hurt => {
-                        (tone(t, 55.) * 0.33 + rumble * 1.4) * pulse(t, 0., 15.)
-                            + filtered * 0.31 * pulse(t, 0., 54.)
-                    }
-                    Cue::Patrol => {
-                        (click * 0.78 + filtered * 0.55) * pulse(t, 0., 83.)
-                            + (tone(t, 131.) * 0.23 + rumble * 1.2) * pulse(t, 0.004, 24.)
-                    }
-                    Cue::Smg => {
-                        (click * 0.72 + filtered * 0.88) * pulse(t, 0., 74.)
-                            + (tone(t, 105.) * 0.33 + rumble * 1.35) * pulse(t, 0.002, 35.)
-                            + click * 0.18 * pulse(t, 0.043, 81.)
-                    }
-                    Cue::Cannon => {
-                        (filtered * 1.4 + click * 0.65) * pulse(t, 0., 34.)
-                            + (tone(t, 46.) * 0.57 + rumble * 2.75) * pulse(t, 0., 8.5)
-                            + (tone(t, 62.) * 0.19 + rumble * 1.37) * pulse(t, 0.142, 9.1)
-                    }
-                    Cue::Throw => {
-                        (click * 0.41 + tone(t, 1095.) * 0.19) * pulse(t, 0., 124.)
-                            + filtered * 0.44 * pulse(t, 0.043, 39.)
-                    }
-                    Cue::Blast => {
-                        (click * 0.69 + filtered * 1.18) * pulse(t, 0., 51.)
-                            + (rumble * 2.8 + tone(t, 57.) * 0.53) * pulse(t, 0.007, 9.8)
-                            + (filtered * 0.64 + rumble * 1.30) * pulse(t, 0.085, 12.)
-                            + filtered * 0.25 * pulse(t, 0.208, 17.)
-                    }
-                    Cue::Masonry => {
-                        (filtered * 1.2 + tone(t, 151.) * 0.20) * pulse(t, 0., 39.)
-                            + filtered * (pulse(t, 0.052, 51.) + 0.54 * pulse(t, 0.137, 44.))
-                    }
-                    Cue::Splinter => {
-                        (click * 0.85 + tone(t, 347.) * 0.23) * pulse(t, 0., 72.)
-                            + (click * 0.47 + filtered * 0.47) * pulse(t, 0.044, 43.)
-                    }
-                    Cue::Metal => {
-                        (filtered * 0.91 + click * 0.68) * pulse(t, 0., 63.)
-                            + (tone(t, 327.) * 0.30 + tone(t, 821.) * 0.19 + tone(t, 1451.) * 0.12)
-                                * pulse(t, 0.004, 14.)
-                            + filtered * 0.34 * pulse(t, 0.088, 38.)
-                    }
-                    Cue::Mounted => {
-                        (click * 0.75 + filtered * 0.76) * pulse(t, 0., 76.)
-                            + (tone(t, 65.) * 0.39 + rumble * 0.9) * pulse(t, 0.002, 22.)
-                            + filtered * 0.30 * pulse(t, 0.052, 38.)
-                    }
-                    Cue::Crash => {
-                        (tone(t, 54.) * 0.49 + rumble * 1.3) * pulse(t, 0., 15.)
-                            + click * 0.6 * pulse(t, 0.009, 24.)
-                            + tone(t, 276.) * 0.15 * pulse(t, 0.04, 42.)
-                    }
-                    Cue::ProductionStart => {
-                        tone(t, 384.) * 0.43 * pulse(t, 0., 17.)
-                            + tone(t, 512.) * 0.34 * pulse(t, 0.096, 21.)
-                    }
-                    Cue::ProductionReady => {
-                        tone(t, 522.) * 0.41 * pulse(t, 0., 17.)
-                            + tone(t, 696.) * 0.35 * pulse(t, 0.11, 19.)
-                            + tone(t, 783.) * 0.35 * pulse(t, 0.21, 16.)
-                    }
-                    Cue::Dry => (click * 0.57 + tone(t, 811.) * 0.16) * pulse(t, 0., 102.),
-                };
-                let tail = ((frames - 1 - i) as f32 / (RATE as f32 * 0.012)).min(1.);
-                sample.clamp(-1., 1.) * tail
-            })
-            .collect()
-    }
-    struct MotorVoice {
-        target: Motor,
-        phase: f32,
-        road: f32,
-        speed: f32,
-        level: f32,
-        pan: f32,
-        rng: u32,
-        wind: f32,
-    }
-    impl MotorVoice {
-        fn new(m: Motor) -> Self {
-            Self {
-                target: m,
-                phase: (m.id % 11) as f32 / 11.,
-                road: 0.,
-                speed: m.speed,
-                level: 0.,
-                pan: m.pan,
-                rng: (m.id as u32).wrapping_mul(1717).wrapping_add(1),
-                wind: 0.,
-            }
-        }
-        fn sample(&mut self) -> (f32, f32) {
-            self.speed += (self.target.speed - self.speed) * 0.0020;
-            self.level += (self.target.level - self.level) * 0.0015;
-            self.pan += (self.target.pan - self.pan) * 0.0014;
-            let acceleration = ((self.target.speed - self.speed) * 28.).clamp(-0.25, 0.65);
-            let tracked = self.target.kind == 3;
-            let (idle, rise) = match self.target.kind {
-                0 => (51., 95.),
-                1 => (37., 75.),
-                2 => (29., 55.),
-                _ => (26., 47.),
+        "shot" => {
+            let cue = match event["impactMaterial"].as_str()? {
+                "metal" | "barrels" | "jeep" | "truck" | "tank" => Cue::Metal,
+                "plank" | "fence" | "crate" | "tree" | "barn" | "barricade" | "tower" => {
+                    Cue::Splinter
+                }
+                "tile" | "glass" => Cue::Tile,
+                "brick" | "stone" | "wall" | "ruin" | "house" => Cue::Masonry,
+                "earth" | "ground" | "sandbag" => Cue::Earth,
+                _ => Cue::Debris,
             };
-            let speed = self.speed.min(1.);
-            let gear = (speed * 3.7).fract();
-            let rpm = idle + rise * (speed * 0.65 + gear * 0.35 + acceleration * 0.40);
-            self.phase = (self.phase + rpm / RATE as f32).fract();
-            self.road = (self.road + (16. + 80. * speed) / RATE as f32).fract();
-            self.rng = self.rng.wrapping_mul(1664525).wrapping_add(1013904223);
-            let noise = (self.rng >> 8) as f32 / 8388608. - 1.;
-            self.wind += 0.045 * (noise - self.wind);
-            let engine = (self.phase * TAU).sin() * 0.31
-                + (self.phase * TAU * 2.).sin() * 0.13
-                + (self.phase * TAU * 3.).sin() * 0.052;
-            let rolling = if tracked {
-                ((1. - self.road).powi(8) * (noise * 0.41 + 0.15) - 0.022) * speed
-            } else {
-                (self.wind * 0.60 + (noise - self.wind) * 0.038) * speed
-            };
-            let sample =
-                (engine * (0.56 + 0.26 * speed + acceleration * 0.15) + rolling) * self.level;
-            (
-                sample * (1. - self.pan) * 0.7,
-                sample * (1. + self.pan) * 0.7,
-            )
+            let mut effect = place(
+                cue,
+                coord(event, "ex") - coord(me, "x"),
+                coord(event, "ez") - coord(me, "z"),
+                me,
+                false,
+            )?;
+            effect.gain *= 0.48;
+            Some(effect)
         }
-    }
-    pub(super) struct Mixer {
-        motors: Vec<MotorVoice>,
-        bank: [Vec<f32>; COUNT],
-        voices: Vec<Voice>,
-    }
-    struct Voice {
-        effect: Trigger,
-        index: usize,
-        left: f32,
-        right: f32,
-    }
-    impl Mixer {
-        pub(super) fn new() -> Self {
-            Self {
-                bank: BANK.map(make),
-                motors: Vec::with_capacity(6),
-                voices: Vec::with_capacity(8),
-            }
-        }
-        pub(super) fn clear(&mut self) {
-            self.voices.clear();
-            self.motors.clear();
-        }
-        pub(super) fn engines(&mut self, motors: &[Motor]) {
-            for voice in &mut self.motors {
-                voice.target.level = 0.;
-            }
-            for &m in motors {
-                if let Some(v) = self.motors.iter_mut().find(|v| v.target.id == m.id) {
-                    v.target = m;
-                } else if self.motors.len() < 8 {
-                    self.motors.push(MotorVoice::new(m));
-                }
-            }
-        }
-        pub(super) fn add(&mut self, effect: Trigger) {
-            if self.voices.len() >= 8 {
-                let (idx, victim) = self
-                    .voices
-                    .iter()
-                    .enumerate()
-                    .min_by_key(|(_, v)| v.effect.priority)
-                    .unwrap();
-                if victim.effect.priority > effect.priority {
-                    return;
-                }
-                self.voices.swap_remove(idx);
-            }
-            let angle = (effect.pan + 1.) * std::f32::consts::FRAC_PI_4;
-            self.voices.push(Voice {
-                effect,
-                index: 0,
-                left: angle.cos() * effect.gain,
-                right: angle.sin() * effect.gain,
-            });
-        }
-        pub(super) fn render(&mut self, output: &mut [i16]) {
-            for frame in output.chunks_exact_mut(2) {
-                let (mut left, mut right) = (0., 0.);
-                for motor in &mut self.motors {
-                    let (l, r) = motor.sample();
-                    left += l;
-                    right += r;
-                }
-                for voice in &mut self.voices {
-                    if let Some(&s) = self.bank[voice.effect.cue as usize].get(voice.index) {
-                        left += s * voice.left;
-                        right += s * voice.right;
-                        voice.index += 1;
-                    }
-                }
-                frame[0] = (left.clamp(-1.58, 1.58) * 20700.) as i16;
-                frame[1] = (right.clamp(-1.58, 1.58) * 20700.) as i16;
-            }
-            self.motors
-                .retain(|m| m.target.level > 0. || m.level > 0.0002);
-            self.voices
-                .retain(|v| v.index < self.bank[v.effect.cue as usize].len());
-        }
-    }
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        #[test]
-        fn bounded_varied_clips_and_silent_tails() {
-            let m = Mixer::new();
-            for clip in &m.bank {
-                assert!(clip.len() >= RATE / 20 && clip.len() < RATE);
-                assert!(clip.iter().all(|n| n.is_finite() && n.abs() <= 1.));
-                assert_eq!(clip.last(), Some(&0.));
-                assert!(clip.iter().any(|n| n.abs() > 0.12));
-            }
-            assert_ne!(&m.bank[0][..400], &m.bank[1][..400]);
-        }
-        #[test]
-        fn engine_pans_tracks_change_and_fade() {
-            let car = Motor {
-                id: 7,
-                kind: 1,
-                speed: 0.15,
-                pan: 1.,
-                level: 0.8,
-            };
-            let mut m = Mixer::new();
-            m.engines(&[car]);
-            let mut block = vec![0; RATE / 4 * 2];
-            m.render(&mut block);
-            assert!(block.chunks_exact(2).all(|f| f[0].abs() <= 1));
-            assert!(block.chunks_exact(2).any(|f| f[1].abs() > 800));
-            let road = block.clone();
-            m.engines(&[Motor {
-                kind: 3,
-                speed: 0.8,
-                ..car
-            }]);
-            m.render(&mut block);
-            assert_ne!(road, block);
-            m.engines(&[]);
-            m.render(&mut vec![0; RATE]);
-            assert!(m.motors.is_empty());
-        }
-        #[test]
-        fn stereo_pan_and_voice_expiration() {
-            let mut m = Mixer::new();
-            m.add(Trigger {
-                cue: Cue::Dry,
-                gain: 1.,
-                pan: 1.,
-                priority: 2,
-            });
-            let mut block = vec![0; RATE / 3 * 2];
-            m.render(&mut block);
-            assert!(block.chunks_exact(2).all(|pair| pair[0].abs() <= 1));
-            assert!(block.chunks_exact(2).any(|pair| pair[1].abs() > 1000));
-            assert!(m.voices.is_empty());
-            m.clear();
-        }
+        _ => None,
     }
 }
+
+#[cfg(any(target_os = "windows", test))]
+#[path = "sound_mixer.rs"]
+mod mixer;
 
 #[cfg(target_os = "windows")]
 mod device {
@@ -787,11 +655,11 @@ mod device {
         fn waveOutReset(device: Handle) -> u32;
         fn waveOutClose(device: Handle) -> u32;
     }
-    const FRAMES: usize = 384; // 17.4 ms of audio per block
+    const FRAMES: usize = 384; // 12 ms of audio per block
     const SIZE: u32 = size_of::<Header>() as u32;
     enum Message {
         Play(u64, Trigger),
-        Motors(u64, Vec<Motor>),
+        Motors(u64, Vec<Motor>, f32),
     }
     pub(super) struct Output {
         tx: Option<SyncSender<Message>>,
@@ -813,9 +681,13 @@ mod device {
                 thread,
             }
         }
-        pub(super) fn motors(&self, values: Vec<Motor>) {
+        pub(super) fn motors(&self, values: Vec<Motor>, wind: f32) {
             if let Some(tx) = &self.tx {
-                let _ = tx.try_send(Message::Motors(self.epoch.load(Ordering::Acquire), values));
+                let _ = tx.try_send(Message::Motors(
+                    self.epoch.load(Ordering::Acquire),
+                    values,
+                    wind,
+                ));
             }
         }
         pub(super) fn enqueue(&self, effect: Trigger) {
@@ -892,7 +764,10 @@ mod device {
             loop {
                 match rx.try_recv() {
                     Ok(Message::Play(g, e)) if g == current => mixer.add(e),
-                    Ok(Message::Motors(g, v)) if g == current => mixer.engines(&v),
+                    Ok(Message::Motors(g, v, wind)) if g == current => {
+                        mixer.engines(&v);
+                        mixer.outdoors(wind);
+                    }
                     Ok(_) => {}
                     Err(TryRecvError::Empty) => break,
                     Err(TryRecvError::Disconnected) => break 'play,
@@ -960,6 +835,85 @@ mod events_test {
         assert!(stations.changes(&scene(0., 6), &me).is_empty());
     }
     #[test]
+    fn guns_impacts_and_loader_use_their_own_origins() {
+        let listener = json!({"x":0, "z":0, "yaw":0});
+        let tank = json!({"actor":3, "at":10., "weapon":"tank", "type":"tankFire","x":3,"z":0});
+        let load = detail(&tank, &listener, 3, 10.16).unwrap();
+        assert_eq!(load.cue, Cue::TankLoader);
+        assert!(load.pan.abs() < 0.001 && (load.offset - 0.16).abs() < 0.001);
+        assert_eq!(from_event(&tank, &listener, 3).unwrap().cue, Cue::Cannon);
+        let apc = json!({"actor":3,"type":"tankFire","weapon":"apc_he"});
+        assert_eq!(from_event(&apc, &listener, 3).unwrap().cue, Cue::Apc);
+        assert!(detail(&apc, &listener, 3, 10.).is_none());
+        for (tag, cue) in [
+            ("plank", Cue::Splinter),
+            ("brick", Cue::Masonry),
+            ("stone", Cue::Masonry),
+            ("metal", Cue::Metal),
+            ("tile", Cue::Tile),
+            ("earth", Cue::Earth),
+        ] {
+            let shot = json!({"type":"shot","actor":3,"weapon":"vehicle_mg","x":-12,"z":0,"ex":7,"ez":0,"impactMaterial":tag});
+            assert_eq!(from_event(&shot, &listener, 1).unwrap().cue, Cue::Mounted);
+            assert!(from_event(&shot, &listener, 1).unwrap().pan < -0.7);
+            let hit = detail(&shot, &listener, 1, 10.).unwrap();
+            assert_eq!(hit.cue, cue);
+            assert!(hit.pan > 0.7);
+        }
+    }
+    #[test]
+    fn parked_rotor_stays_world_relative_and_flying_changes_its_load() {
+        let ear = json!({"x":0,"y":2,"z":0,"yaw":0});
+        let mut craft = json!({"id":4,"owner":1,"x":4,"y":3,"z":0,"piloted":false,"battery":50,"speed":0,"vSpeed":0});
+        let rotor = |d: &Value| motors_near(&json!({"drones":[d]}), &ear);
+        let hover = rotor(&craft)[0];
+        assert_eq!(hover.kind, ROTOR);
+        assert!(hover.pan > 0.8 && hover.level > 0.2);
+        craft["y"] = 25.into();
+        let high = rotor(&craft)[0];
+        assert!(high.level < hover.level && high.pan < hover.pan);
+        craft["piloted"] = true.into();
+        craft["speed"] = 8.into();
+        craft["vSpeed"] = 3.into();
+        let climbing = rotor(&craft)[0];
+        assert!(climbing.speed > hover.speed);
+        craft["speed"] = 0.into();
+        craft["vSpeed"] = (-3).into();
+        assert!(rotor(&craft)[0].speed < hover.speed);
+        craft["battery"] = 0.into();
+        assert!(rotor(&craft).is_empty());
+    }
+    #[test]
+    fn footsteps_follow_displacement_and_footing() {
+        let mut steps = Steps {
+            roads: vec![[0., 0., 10., 10., 0., 1.]],
+            walkers: HashMap::new(),
+        };
+        let ear = json!({"x":0,"z":0,"yaw":0});
+        let mut at = 0.;
+        for (loose, expected) in [
+            (false, Cue::BootHard),
+            (true, Cue::BootRubble),
+            (false, Cue::BootGround),
+        ] {
+            if expected == Cue::BootGround {
+                steps.roads.clear();
+            }
+            let player = |x| json!({"players":[{"id":1,"alive":true,"moving":true,"x":x,"z":0,"looseFooting":loose}]});
+            assert!(steps.advance(&player(at), &ear, 1).is_empty());
+            at += 1.36;
+            assert_eq!(steps.advance(&player(at), &ear, 1)[0].cue, expected);
+            assert!(steps.advance(&player(at), &ear, 1).is_empty());
+        }
+        assert!(steps
+            .advance(
+                &json!({"players":[{"id":1,"alive":true,"moving":true,"vehicleId":1,"x":10}]}),
+                &ear,
+                1
+            )
+            .is_empty());
+    }
+    #[test]
     fn events_are_stereo_local_and_deduplicated() {
         let p = json!({"id":3,"x":0,"z":0,"yaw":0});
         let remote = json!({"id":2,"type":"shot","actor":4,"at":1,"x":25,"z":0});
@@ -968,14 +922,22 @@ mod events_test {
         assert!(e.pan > 0.7 && e.gain > 0. && e.gain < 0.6);
         assert!(from_event(&json!({"type":"hurt","actor":4}), &p, 3).is_none());
         let mut s = Sound::new();
-        s.update(&json!({"players":[p],"elapsed":1,"events":[remote]}), 3);
+        s.update(
+            &json!({"players":[p],"elapsed":1,"events":[remote]}),
+            3,
+            (0., 0., 0., 0.),
+        );
         assert_eq!(s.last_event, Some(2));
         assert!(s.last_cue[Cue::Distant as usize].is_infinite());
         let newest = json!({"id":3,"type":"shot","actor":3,"at":2,"x":0,"z":0});
         let state = json!({"players":[p],"elapsed":2,"events":[newest]});
-        s.update(&state, 3);
+        s.update(&state, 3, (0., 0., 0., 0.));
         assert_eq!(s.last_cue[Cue::Shot as usize], 2.);
-        s.update(&json!({"players":[p],"elapsed":2.1,"events":[newest]}), 3);
+        s.update(
+            &json!({"players":[p],"elapsed":2.1,"events":[newest]}),
+            3,
+            (0., 0., 0., 0.),
+        );
         assert_eq!(s.last_cue[Cue::Shot as usize], 2.);
         s.clear();
         assert!(s.last_event.is_none());

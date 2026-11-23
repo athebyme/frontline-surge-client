@@ -99,6 +99,8 @@ pub struct Motion {
     cursor: f64,
     speed: f64,
     pub age: f32,
+    pub local_turret: Option<(u64, f32)>,
+    pub optic_vehicle: Option<u64>,
     pub local_gun_pitch: Option<(u64, f32)>,
 }
 impl Motion {
@@ -159,7 +161,11 @@ impl Motion {
         self.sample(v, |f| &f.players, 3.)
     }
     pub fn vehicle(&self, v: &Value) -> Pose {
-        self.sample(v, |f| &f.vehicles, 9.)
+        let mut pose = self.sample(v, |f| &f.vehicles, 9.);
+        if let Some((id, yaw)) = self.local_turret {
+            if v["id"].as_u64() == Some(id) { pose.turret = yaw; }
+        }
+        pose
     }
     pub fn drone(&self, v: &Value) -> Pose {
         self.sample(v, |f| &f.drones, 9.)

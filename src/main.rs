@@ -9,6 +9,7 @@ mod settings;
 mod sound;
 mod ui;
 mod vehicle_camera;
+mod vehicle_sensor;
 mod world;
 
 use frontline_surge::net::{Client, Connecting};
@@ -106,7 +107,9 @@ struct Play {
     body: Vec3,
     position_ready: bool,
     vehicle_camera: vehicle_camera::VehicleCamera,
+    aim_scene: chase::Scene,
     drone_zoom: bool,
+    operator_view: Option<(f32, f32)>,
     motion: motion::Motion,
     render_local: Value,
     ads: f32,
@@ -116,6 +119,7 @@ struct Play {
     pointer: motion::LookDelta,
     edges: Value,
     fire_tap: bool,
+    drawn_build: Option<(Option<u64>, Option<u64>)>,
     secondary_tap: bool,
     wait_trigger_release: bool,
     seq: u64,
@@ -135,7 +139,9 @@ impl Play {
             body: Vec3::ZERO,
             position_ready: false,
             vehicle_camera: Default::default(),
+            aim_scene: Default::default(),
             drone_zoom: false,
+            operator_view: None,
             motion: motion::Motion::default(),
             render_local: Value::Null,
             ads: 0.,
@@ -145,6 +151,7 @@ impl Play {
             pointer: Default::default(),
             edges: json!({}),
             fire_tap: false,
+            drawn_build: None,
             secondary_tap: false,
             wait_trigger_release: true,
             seq: 0,
@@ -201,16 +208,27 @@ impl Play {
             || self.local["vehicleId"] != player["vehicleId"]
         {
             self.drone_zoom = false;
+            self.vehicle_camera = Default::default();
             self.ads = 0.;
             if player["droneId"].is_number() {
-                self.pitch = -0.46;
+                self.operator_view = Some((self.yaw, self.pitch));
+                if let Some(d) = new["drones"].as_array().into_iter().flatten().find(|d| d["id"] == player["droneId"]) {
+                    self.yaw = num(d,"yaw");
+                    self.pitch = num(d,"pitch");
+                }
+            } else if self.local["droneId"].is_number() {
+                if let Some((yaw,pitch)) = self.operator_view.take().filter(|_| player["alive"] == true && !new_life) {
+                    self.yaw = yaw;
+                    self.pitch = pitch;
+                }
             } else if let Some(v) = new["vehicles"]
                 .as_array()
                 .into_iter()
                 .flatten()
                 .find(|v| v["id"] == player["vehicleId"])
             {
-                self.yaw = num(v, "yaw");
+                self.yaw = v["turretUnwrapped"].as_f64().or(v["turretYaw"].as_f64())
+                    .map_or(num(v, "yaw"), |v| v as f32);
                 self.pitch = -0.035;
             }
             self.wait_trigger_release = true;
@@ -232,6 +250,7 @@ impl Play {
             }
             self.ads_rate = 13. * kit.equipped(slot).aim_speed();
         }
+        self.aim_scene.receive(&new);
         self.motion.receive(&new);
         self.render_local = player.clone();
         self.local = player.clone();
@@ -289,23 +308,43 @@ impl Play {
                 && self.local["alive"] == true
                 && !self.local["droneId"].is_number()
             {
+                let was_onboard = self.vehicle_camera.onboard;
                 if is_key_pressed(KeyCode::Y) {
-                    self.vehicle_camera.onboard = !self.vehicle_camera.onboard;
+                    self.vehicle_camera.toggle();
                 }
                 self.vehicle_camera.scroll(mouse_wheel().1);
+                if !was_onboard && self.in_armored_optics() {
+                    if let Some((_, joint)) = self.motion.local_turret { self.yaw = joint; }
+                }
+                if self.in_armored_optics() && is_key_pressed(KeyCode::N) {
+                    self.vehicle_camera.sensor = self.vehicle_camera.sensor.next();
+                }
             }
             let sensitivity = if self.drone_zoom || is_mouse_button_down(MouseButton::Right) {
                 0.00135
             } else {
                 0.0022
             } * mouse_speed;
+            let previous_yaw = self.yaw;
             self.yaw += delta.x * sensitivity;
             self.pitch = (self.pitch - delta.y * sensitivity).clamp(-1.28, 1.28);
             self.yaw += (is_key_down(KeyCode::Right) as i8 - is_key_down(KeyCode::Left) as i8)
                 as f32
                 * dt
                 * 1.75;
-            self.yaw = self.yaw.sin().atan2(self.yaw.cos());
+            if self.local["vehicleId"].is_null() {
+                self.yaw = self.yaw.sin().atan2(self.yaw.cos());
+            }
+            if self.in_armored_optics() {
+                if let Some((_, joint)) = self.motion.local_turret {
+                    self.yaw = vehicle_camera::optic_command(previous_yaw, joint, self.yaw-previous_yaw);
+                }
+                let mount = self.driver_vehicle().and_then(|v| frontline_surge::vehicle_gun::Mount::for_kind(v["kind"].as_str()?));
+                if let Some(mount) = mount { self.pitch = mount.pitch(self.pitch); }
+            }
+            if is_key_pressed(KeyCode::N) && !self.in_armored_optics() {
+                self.edges["cycleMode"] = json!(true);
+            }
             for (key, name) in [
                 (KeyCode::E, "interact"),
                 (KeyCode::B, "build"),
@@ -315,15 +354,21 @@ impl Play {
                 (KeyCode::G, "service"),
                 (KeyCode::V, "upgradeSelect"),
                 (KeyCode::U, "upgrade"),
-                (KeyCode::N, "cycleMode"),
+
                 (KeyCode::X, "pulse"),
                 (KeyCode::C, "ammoCraft"),
                 (KeyCode::H, "grenade"),
-                (KeyCode::J, "drone"),
+
             ] {
                 if is_key_pressed(key) {
                     self.edges[name] = json!(true);
                 }
+            }
+            if is_key_pressed(KeyCode::J) {
+                // The legacy drone edge also launches or recalls on older protocol-5 hosts.
+                self.edges["drone"] = json!(true);
+                self.edges["droneLink"] = json!(true);
+                self.edges["droneRecall"] = json!(is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift));
             }
             for (key, id) in [
                 (KeyCode::Key1, "mr7"),
@@ -347,9 +392,12 @@ impl Play {
                     self.edges["ping"] = json!(true);
                 } else {
                     self.fire_tap = true;
-                    self.edges["place"] = json!(true);
-                    if let Some(support) = self.local["preview"].get("supportBuildId") {
-                        self.edges["supportBuildId"] = support.clone();
+                    if let Some((preview, support)) = self.drawn_build {
+                        self.edges["place"] = json!(true);
+                        if let Some(id) = preview {
+                            self.edges["previewId"] = id.into();
+                        }
+                        self.edges["supportBuildId"] = json!(support);
                     }
                 }
             }
@@ -380,7 +428,10 @@ impl Play {
         self.seq += 1;
         let mut v = std::mem::replace(&mut self.edges, json!({}));
         v["seq"] = json!(self.seq);
-        v["yaw"] = json!(self.yaw);
+        v["yaw"] = json!(self.yaw.sin().atan2(self.yaw.cos()));
+        if self.local["vehicleId"].is_number() {
+            v["turretAim"] = json!(self.yaw);
+        }
         v["pitch"] = json!(self.pitch);
         if self.mode == "playing" && active && self.local["alive"] == true {
             let f = (is_key_down(KeyCode::W) || is_key_down(KeyCode::Up)) as i8
@@ -398,6 +449,7 @@ impl Play {
             let right_down = is_mouse_button_down(MouseButton::Right);
             let seated = self.local["vehicleId"].is_number();
             v["aim"] = json!(right_down && (!seated || !self.wait_trigger_release));
+            v["apcRounds"] = json!(seated);
             v["secondary"] =
                 json!(seated && !self.wait_trigger_release && (right_down || self.secondary_tap));
             v["sprint"] =
@@ -408,11 +460,52 @@ impl Play {
         link.input(v)
             .map_err(|_| "Связь с сервером прервалась.".into())
     }
+    fn driver_vehicle(&self) -> Option<&Value> {
+        let id = self.local["vehicleId"].as_u64()?;
+        self.state["vehicles"].as_array()?.iter().find(|v| v["id"].as_u64() == Some(id))
+    }
+    fn in_armored_optics(&self) -> bool {
+        self.vehicle_camera.onboard && self.driver_vehicle().is_some_and(|v|
+            matches!(v["kind"].as_str(), Some("mbt" | "apc")))
+    }
+    fn active_sensor(&self) -> vehicle_camera::Sensor {
+        if self.in_armored_optics() { self.vehicle_camera.sensor } else { vehicle_camera::Sensor::Day }
+    }
+    fn update_vehicle_sight(&mut self, dt: f32) {
+        let id = self.local["vehicleId"].as_u64();
+        self.motion.local_turret = None;
+        self.motion.optic_vehicle = None;
+        let Some(v) = self.state["vehicles"].as_array().and_then(|vs| vs.iter()
+            .find(|v| id.is_some() && v["id"].as_u64() == id)) else { return };
+        let Some(mount) = frontline_surge::vehicle_gun::Mount::for_kind(v["kind"].as_str().unwrap_or("")) else {return};
+        let yaw = if let Some(latest) = v["turretUnwrapped"].as_f64() {
+            self.vehicle_camera.turret(id.unwrap(), latest as f32, self.yaw, self.motion.age, dt)
+        } else {
+            self.motion.vehicle(v).turret
+        };
+        self.motion.local_turret = Some((id.unwrap(), yaw));
+        if self.vehicle_camera.onboard { self.motion.optic_vehicle = id; }
+        let pose = self.motion.vehicle(v);
+        let pitch = mount.pitch(self.pitch);
+        let ray = mount.ray(pose.position.x, pose.position.z, pose.yaw, yaw, pitch, true);
+        let origin = Vec3::from_array(ray.origin);
+        let direction = Vec3::from_array(ray.direction);
+        let predicted = self.aim_scene.machinegun_contact(origin, direction,
+            frontline_surge::vehicle_gun::MG_RANGE, &self.state, &self.local, &self.motion);
+        let contact = vehicle_camera::reconcile(origin, direction, predicted, &self.local, self.motion.age);
+        self.render_local["mgSight"] = json!(contact.to_array());
+        self.render_local["sightRange"] = json!(origin.distance(contact));
+        self.render_local["gunYaw"] = json!(yaw);
+        self.render_local["gunPitch"] = json!(pitch);
+        self.render_local["onboardOptic"] = json!(self.vehicle_camera.onboard);
+        self.render_local["opticSensor"] = json!(self.vehicle_camera.sensor.label());
+    }
     fn update_presentation(&mut self, dt: f32, active: bool) {
         if !self.local.is_object() {
             return;
         }
         self.motion.local_gun_pitch = self.local["vehicleId"].as_u64().map(|id| (id, self.pitch));
+        self.update_vehicle_sight(dt);
         let aim = active
             && is_mouse_button_down(MouseButton::Right)
             && self.local["alive"] == true
@@ -425,6 +518,7 @@ impl Play {
         self.render_local["aim"] = json!(self.ads);
         self.render_local["bob"] = json!(self.motion.player(&self.local).bob);
         for (key, decay) in [
+            ("droneLaunch", 1.),
             ("reload", 1.),
             ("recoil", 6.),
             ("hitFlash", 2.7),
@@ -478,10 +572,9 @@ impl Play {
                 let look = dir(self.yaw, self.pitch);
                 let distance = self.vehicle_camera.chase_distance(height < 2., dt);
                 let desired = focus - look * distance + Vec3::Y * 1.35;
-                let eye = chase::clip(
+                let eye = self.aim_scene.clip(
                     focus,
                     desired.max(vec3(f32::NEG_INFINITY, 0.32, f32::NEG_INFINITY)),
-                    &self.state,
                 );
                 (eye, (focus + look * 15. - eye).normalize_or_zero(), 75.)
             }
@@ -535,6 +628,7 @@ async fn main() {
     let mut debug = debug_ui::DebugUi::new();
     let mut spectator: Option<debug_ui::FreeCamera> = None;
     let mut video = drone_view::Feed::new();
+    let mut optic_display = vehicle_sensor::Display::new();
     loop {
         let frame_time = get_frame_time().max(0.);
         let dt = frame_time.min(0.1);
@@ -647,8 +741,12 @@ async fn main() {
             play.camera(dt)
         };
         let in_feed = play.local["droneId"].is_number() && spectator.is_none();
+        let sensor = if spectator.is_none() && !in_feed { play.active_sensor() } else { vehicle_camera::Sensor::Day };
+        let thermal = sensor == vehicle_camera::Sensor::Thermal;
         if in_feed {
             cam.render_target = Some(video.target());
+        } else if sensor != vehicle_camera::Sensor::Day {
+            cam.render_target = Some(optic_display.target());
         }
         set_camera(&cam);
         clear_background(Color::from_rgba(153, 174, 177, 255));
@@ -661,9 +759,13 @@ async fn main() {
             .local
             .get("preview")
             .filter(|p| p.is_object() && play.local["alive"] == true);
+        if spectator.is_some() { play.motion.optic_vehicle = None; }
+        field.set_thermal(thermal);
         field.set_graphics(screen.settings.graphics);
         field.draw(snapshot, cam.position, &play.motion);
+        play.drawn_build = None;
         if snapshot.is_some() {
+            people.set_thermal(thermal);
             people.set_daylight(field.daylight());
             if spectator.is_some() {
                 let mut local = play.local.clone();
@@ -680,9 +782,15 @@ async fn main() {
             drone_view::draw(&play.state, &play.local, cam.position, &play.motion);
             if let Some(p) = ghost {
                 field.draw_build_preview(p);
+                play.drawn_build = Some((p["previewId"].as_u64(), p["supportBuildId"].as_u64()));
             }
             if let Some(id) = play.client.as_ref().and_then(|c| c.id) {
-                audio.update(&play.state, id);
+                let heading = motion::view_angles(cam.target - cam.position).0;
+                audio.update(
+                    &play.state,
+                    id,
+                    (cam.position.x, cam.position.y, cam.position.z, heading),
+                );
             }
             if spectator.is_none()
                 && play.local["alive"] == true
@@ -706,6 +814,8 @@ async fn main() {
                 .find(|v| v["id"] == play.local["droneId"])
                 .map_or(1., |v| num(v, "signal"));
             video.present(signal);
+        } else if sensor != vehicle_camera::Sensor::Day {
+            optic_display.present(sensor);
         }
         screen.set_drone_zoom(play.drone_zoom);
         screen.set_scoreboard(play.mode == "playing" && !overlay && is_key_down(KeyCode::Tab));

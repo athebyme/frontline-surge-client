@@ -1,15 +1,50 @@
 //! Context-sensitive field fabrication catalogue. The server validates each submitted action.
 use super::{
-    alpha, count, flag, kit_name, number, string, Action, Surface, EDGE, GOLD, INK, MATERIALS,
-    MUTED, PAPER, RED_TEAM,
+    alpha, count, flag, kit_name, number, string, Action, Surface, EDGE, GOLD, MATERIALS, MUTED,
+    PAPER, RED_TEAM,
 };
-use macroquad::prelude::Color;
+#[path = "fabrication_art.rs"]
+mod fabrication_art;
+use fabrication_art::product;
 use serde_json::{json, Value};
 
 pub(super) struct CraftMenu {
     tab: usize,
     pick: usize,
     station: Option<&'static str>,
+    receipt: Option<Receipt>,
+}
+struct Receipt {
+    previous: String,
+    previous_time: f64,
+    deadline: f64,
+    shown: Option<String>,
+}
+impl Receipt {
+    fn pending(p: &Value, now: f64) -> Self {
+        Self {
+            previous: string(p, "message", "").into(),
+            previous_time: number(p, "messageT", 0.),
+            deadline: now + 3.,
+            shown: None,
+        }
+    }
+    fn message<'a>(&'a mut self, p: &Value, now: f64) -> Option<&'a str> {
+        let t = number(p, "messageT", 0.);
+        let msg = string(p, "message", "");
+        if self.shown.is_none()
+            && now < self.deadline
+            && t > 0.
+            && !msg.is_empty()
+            && (msg != self.previous || t > self.previous_time + 0.04)
+        {
+            self.shown = Some(msg.into());
+        }
+        self.previous_time = t;
+        self.shown
+            .as_deref()
+            .filter(|result| *result == msg && t > 0.)
+    }
 }
 struct Recipe {
     id: &'static str,
@@ -167,6 +202,8 @@ fn catalogue(tab: usize, state: &Value, p: &Value) -> Vec<Recipe> {
             let gun_car = seated && vehicle.is_some_and(|v|count(v,"mgCapacity",0)>0);
             let (name, detail) = if tank {
                 ("Боекомплект танка","До 3 снарядов для пушки и 28 патронов для пулемёта.")
+            } else if gun_car && vehicle.is_some_and(|v| count(v,"shellCapacity",0)>0) {
+                ("Боекомплект БТР","До 3 осколочных выстрелов и 28 патронов для пулемёта.")
             } else if gun_car {
                 ("Пулемётная лента","До 28 патронов для бортового пулемёта.")
             } else {
@@ -175,7 +212,7 @@ fn catalogue(tab: usize, state: &Value, p: &Value) -> Vec<Recipe> {
             let mut ammo=Recipe::new("ammo",name,"Рядом со своей мастерской.",detail,
                 vec![("powder",2),("metal",1)],"Изготовить");
             ammo.require(workshop,"Подойди или подведи машину к своей мастерской.");
-            let full = gun_car && vehicle.is_some_and(|v| (!tank || count(v,"shells",0)>=12) && count(v,"mgAmmo",0)>=count(v,"mgCapacity",0));
+            let full = gun_car && vehicle.is_some_and(|v| (count(v,"shells",0)>=count(v,"shellCapacity",if tank {12} else {0})) && count(v,"mgAmmo",0)>=count(v,"mgCapacity",0));
             ammo.require(!full,"Боекомплект машины полон.");
             rows.push(ammo);
             let mut grenade=Recipe::new("grenade","Ручная граната","Рядом со своей мастерской.","Добавляет одну гранату в снаряжение бойца. H — бросок в бою.",vec![("powder",2),("metal",1)],"Изготовить");
@@ -229,6 +266,194 @@ fn catalogue(tab: usize, state: &Value, p: &Value) -> Vec<Recipe> {
     }
     rows
 }
+fn product_id<'a>(r: &'a Recipe, state: &Value, p: &Value) -> &'a str {
+    if r.id == "upgrade" {
+        if string(p, "upgradeChoice", "mobility") == "mobility" {
+            "mobility"
+        } else {
+            "utility"
+        }
+    } else if r.id == "ammo"
+        && !p["vehicleId"].is_null()
+        && friendly_vehicle(state, p).is_some_and(|v| count(v, "mgCapacity", 0) > 0)
+    {
+        "shells"
+    } else {
+        r.id
+    }
+}
+struct Change {
+    label: &'static str,
+    from: String,
+    to: String,
+}
+impl Change {
+    fn new(label: &'static str, from: impl ToString, to: impl ToString) -> Self {
+        Self {
+            label,
+            from: from.to_string(),
+            to: to.to_string(),
+        }
+    }
+}
+fn changes(r: &Recipe, state: &Value, p: &Value) -> Vec<Change> {
+    let mut result = Vec::with_capacity(3);
+    let v = friendly_vehicle(state, p);
+    match r.id {
+        "wall" | "workshop" | "refinery" => {
+            if r.id == "wall" {
+                result.push(Change::new("Построить", "—", "1 секция"));
+            } else {
+                let current = state["factories"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|f| f["kind"] == r.id && f["team"] == p["team"])
+                    .count();
+                result.push(Change::new("У команды", current, current + 1));
+            }
+            let hp = match r.id {
+                "wall" => 140,
+                "refinery" => 260,
+                _ => 300,
+            };
+            result.push(Change::new("Прочность", "—", hp));
+        }
+        "refine" => {
+            let f = by_facility(p, state, "refinery", 2.6);
+            let ready = f.map_or(0, |v| count(v, "ready", 0));
+            if ready > 0 {
+                let held = count(p, "fuel", 0);
+                let moved = (32 - held).clamp(0, ready);
+                result.push(Change::new("Топливо в рюкзаке", held, held + moved));
+                result.push(Change::new("В приёмнике", ready, ready - moved));
+            } else {
+                result.push(Change::new("Топливо на выходе", 0, 6));
+                result.push(Change::new("Цикл", "—", "12 с"));
+            }
+        }
+        "grenade" => {
+            let n = count(p, "grenades", 0);
+            result.push(Change::new("Гранаты бойца", n, (n + 1).min(4)));
+        }
+        "ammo" => {
+            if let Some(car) =
+                v.filter(|v| !p["vehicleId"].is_null() && count(v, "mgCapacity", 0) > 0)
+            {
+                let cap = count(
+                    car,
+                    "shellCapacity",
+                    if car["kind"] == "mbt" { 12 } else { 0 },
+                );
+                if cap > 0 {
+                    let shells = count(car, "shells", 0);
+                    result.push(Change::new("Боезапас пушки", shells, (shells + 3).min(cap)));
+                }
+                let n = count(car, "mgAmmo", 0);
+                result.push(Change::new(
+                    "Пулемётная лента",
+                    n,
+                    (n + 28).min(count(car, "mgCapacity", 0)),
+                ));
+            } else {
+                let n = count(p, "reserve", 0);
+                result.push(Change::new("Патроны в запасе", n, n + 24));
+            }
+        }
+        "service" => {
+            if let Some(car) = v {
+                let cost = |id: &str| r.cost.iter().find(|(k, _)| *k == id).map_or(0, |(_, n)| *n);
+                let fuel = number(car, "fuel", 0.);
+                let hp = number(car, "hp", 0.);
+                result.push(Change::new(
+                    "Топливо в баке",
+                    fuel.ceil(),
+                    (fuel + cost("fuel") as f64)
+                        .min(number(car, "maxFuel", 0.))
+                        .ceil(),
+                ));
+                result.push(Change::new(
+                    "Прочность корпуса",
+                    hp.ceil(),
+                    (hp + if cost("metal") > 0 { 80. } else { 0. })
+                        .min(number(car, "maxHp", 0.))
+                        .ceil(),
+                ));
+            }
+        }
+        "upgrade" => {
+            if let Some(car) = v {
+                let kind = string(car, "kind", "");
+                let prev = string(car, "upgrade", "");
+                let choice = string(p, "upgradeChoice", "mobility");
+                let old = count(car, "upgradeLevel", 0);
+                let tier = if prev == choice { (old + 1).min(2) } else { 1 };
+                let get = |k: &str, expected: &str, i: i32| if k == expected { i } else { 0 };
+                let old_u = get(prev, "utility", old);
+                let new_u = get(choice, "utility", tier);
+                let old_m = get(prev, "mobility", old);
+                let new_m = get(choice, "mobility", tier);
+                let mult = |m: i32, u: i32| {
+                    (1. + 0.14 * m as f64)
+                        * if kind == "mbt" {
+                            1. - 0.075 * u as f64
+                        } else {
+                            1.
+                        }
+                };
+                let speed = |m, u| format!("{}%", (100. * mult(m, u)).round() as i32);
+                result.push(Change::new(
+                    "Ход без груза",
+                    speed(old_m, old_u),
+                    speed(new_m, new_u),
+                ));
+                if old_u != new_u {
+                    match kind {
+                        "cargo6x6" | "apc" => {
+                            let inc = if kind == "apc" { 12 } else { 32 };
+                            let n = count(car, "cargoCapacity", 0);
+                            result.push(Change::new("Мест в кузове", n, n + (new_u - old_u) * inc));
+                        }
+                        "mbt" => {
+                            let n = number(car, "maxHp", 610.);
+                            result.push(Change::new(
+                                "Предел корпуса",
+                                n.round(),
+                                (n / (1. + 0.22 * old_u as f64) * (1. + 0.22 * new_u as f64))
+                                    .round(),
+                            ));
+                        }
+                        _ => {
+                            let n = number(car, "maxFuel", 0.);
+                            result.push(Change::new(
+                                "Объём бака",
+                                n.round(),
+                                (n / (1. + 0.42 * old_u as f64) * (1. + 0.42 * new_u as f64))
+                                    .round(),
+                            ));
+                        }
+                    }
+                }
+                result.push(Change::new(
+                    "Комплект",
+                    if old == 0 {
+                        "Штатный".to_owned()
+                    } else {
+                        format!("{} {old}", kit_name(prev))
+                    },
+                    format!("{} {tier}", kit_name(choice)),
+                ));
+            }
+        }
+        _ => {}
+    }
+    result
+}
+fn stock_mark(s: &Surface, key: &str, x: f32, y: f32, c: macroquad::prelude::Color) {
+    if let Some(i) = MATERIALS.iter().position(|(id, _)| *id == key) {
+        super::stash_ui::material_symbol(s, i, x, y, c);
+    }
+}
 pub(super) fn available_station(state: &Value, p: &Value) -> Option<&'static str> {
     if !flag(p, "alive", true) || flag(p, "buildMode", false) || !p["droneId"].is_null() {
         return None;
@@ -270,18 +495,21 @@ impl CraftMenu {
             tab: 0,
             pick: 0,
             station: None,
+            receipt: None,
         }
     }
     pub(super) fn browse(&mut self) {
+        self.receipt = None;
         self.station = None;
     }
     pub(super) fn open_station(&mut self, kind: &str) {
+        self.receipt = None;
         self.station = match kind {
             "refinery" => Some("refinery"),
             "workshop" => Some("workshop"),
             _ => None,
         };
-        self.tab = if kind == "workshop" { 3 } else { 1 };
+        self.tab = 1;
         self.pick = 0;
     }
     fn loadout(&self, s: &Surface, x: f32, y: f32, state: &Value, p: &Value) -> Action {
@@ -320,6 +548,14 @@ impl CraftMenu {
             ) {
                 return Action::Input(json!({"weapon":key}));
             }
+            super::field_hud::weapon_picture(
+                s,
+                key,
+                x + 33. + i as f32 * 158.,
+                y + 228.,
+                0.65,
+                if weapon == *key { GOLD } else { MUTED },
+            );
         }
         s.text("РЕЖИМ ОГНЯ", x + 536., y + 204., 11., GOLD);
         let caption = format!("{}    N  ›", mode_name(string(p, "fireMode", "semi")));
@@ -332,6 +568,23 @@ impl CraftMenu {
         }
         s.text("ПРИЦЕЛ", x + 28., y + 293., 11., GOLD);
         s.text("ЦЕВЬЁ", x + 468., y + 293., 11., GOLD);
+        use frontline_surge::arsenal::{FireMode, Grip, Kit, Optic};
+        let optic = |id: &str| match id {
+            "scope" => Optic::Scope,
+            "reflex" => Optic::Reflex,
+            _ => Optic::Irons,
+        };
+        let grip = |id: &str| match id {
+            "stable" => Grip::Stable,
+            "light" => Grip::Light,
+            _ => Grip::Standard,
+        };
+        let current_kit = Kit {
+            optic: optic(string(p, "optic", "irons")),
+            grip: grip(string(p, "grip", "standard")),
+            mode: FireMode::Semi,
+        };
+        let mut proposed = current_kit;
         for (col, (field, input, opts)) in [
             (
                 "optic",
@@ -358,6 +611,13 @@ impl CraftMenu {
             let bx = x + 28. + col as f32 * 440.;
             let current = string(p, field, opts[0].0);
             for (i, (id, label)) in opts.iter().enumerate() {
+                if s.over(bx + i as f32 * 137., y + 308., 130., 37.) {
+                    if *field == "optic" {
+                        proposed.optic = optic(id);
+                    } else {
+                        proposed.grip = grip(id);
+                    }
+                }
                 if choose(
                     bx + i as f32 * 137.,
                     y + 308.,
@@ -370,22 +630,44 @@ impl CraftMenu {
                 }
             }
         }
-        s.wrap(
-            "Коллиматор даёт широкий обзор. Оптика приближает цель.",
-            x + 28.,
-            y + 375.,
-            397.,
-            14.,
-            MUTED,
-        );
-        s.wrap(
-            "Лёгкое цевьё повышает подвижность. Устойчивое уменьшает разброс.",
-            x + 468.,
-            y + 375.,
-            394.,
-            14.,
-            MUTED,
-        );
+        super::field_hud::weapon_picture(s, weapon, x + 37., y + 373., 2.6, PAPER);
+        let view = |v: f32| format!("{:.0}°", v);
+        let pct = |v: f32| format!("{:.0}%", 100. * v);
+        for (i, (label, old, new)) in [
+            (
+                "Поле зрения",
+                view(current_kit.ads_fov()),
+                view(proposed.ads_fov()),
+            ),
+            (
+                "Подвижность",
+                pct(current_kit.mobility()),
+                pct(proposed.mobility()),
+            ),
+            (
+                "Разброс",
+                pct(current_kit.spread_multiplier()),
+                pct(proposed.spread_multiplier()),
+            ),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let xx = x + 223. + i as f32 * 214.;
+            s.text(label, xx, y + 378., 14., MUTED);
+            let text = if old == new {
+                new
+            } else {
+                format!("{old} → {new}")
+            };
+            s.bold().text(
+                &text,
+                xx,
+                y + 407.,
+                21.,
+                if old == text { PAPER } else { GOLD },
+            );
+        }
         s.line(x + 28., y + 429., x + 880., y + 429., 1., EDGE);
         let note = if !valid {
             "Для подгонки снаряжения нужен боец пешком."
@@ -402,12 +684,31 @@ impl CraftMenu {
             15.,
             if fitting { PAPER } else { RED_TEAM },
         );
-        if number(p, "messageT", 0.) > 0. {
-            s.wrap(string(p, "message", ""), x + 28., y + 521., 828., 14., GOLD);
-        }
         Action::None
     }
     pub(super) fn draw(&mut self, s: &Surface, state: &Value, p: &Value) -> (Action, bool) {
+        let page = (self.station, self.tab, self.pick);
+        let (action, close) = self.sheet(s, state, p);
+        if page != (self.station, self.tab, self.pick) || close {
+            self.receipt = None;
+        }
+        let now = macroquad::time::get_time();
+        if !close && matches!(action, Action::Craft(_) | Action::Input(_)) {
+            self.receipt = Some(Receipt::pending(p, now));
+        }
+        if let Some(msg) = self
+            .receipt
+            .as_mut()
+            .and_then(|receipt| receipt.message(p, now))
+        {
+            let x = (s.w - 908.) * 0.5 + 28.;
+            let y = (s.h - 572.) * 0.5 + 564.;
+            s.bold().text("Результат", x, y, 13., GOLD);
+            s.text(&s.shorten(msg, 14., 755.), x + 84., y, 14., PAPER);
+        }
+        (action, close)
+    }
+    fn sheet(&mut self, s: &Surface, state: &Value, p: &Value) -> (Action, bool) {
         let title = match self.station {
             Some("workshop") => "Мастерская",
             Some("refinery") => "Нефтеперегонка",
@@ -417,20 +718,17 @@ impl CraftMenu {
         if s.button(x + 762., y + 26., 120., 33., "Закрыть  K", false) {
             return (Action::None, true);
         }
-        let materials = MATERIALS
-            .iter()
-            .map(|(k, n)| format!("{n} {}", count(p, k, 0)))
-            .collect::<Vec<_>>()
-            .join("    ·    ");
-        s.text(
-            &format!("В рюкзаке    {materials}"),
-            x + 29.,
-            y + 117.,
-            14.,
-            PAPER,
-        );
+        s.text("В рюкзаке", x + 28., y + 123., 15., MUTED);
+        let mut xx = x + 129.;
+        for (key, label) in MATERIALS {
+            let amount = count(p, key, 0);
+            let tint = if amount > 0 { PAPER } else { MUTED };
+            stock_mark(s, key, xx, y + 118., tint);
+            s.text(&format!("{label}  {amount}"), xx + 16., y + 123., 14., tint);
+            xx += 143.;
+        }
         let tabs: &[(usize, &str)] = match self.station {
-            Some("workshop") => &[(3, "Снаряжение"), (1, "Боеприпасы"), (2, "Техника")],
+            Some("workshop") => &[(1, "Боеприпасы"), (2, "Техника"), (3, "Снаряжение")],
             Some("refinery") => &[(1, "Производство")],
             _ => &[
                 (0, "Строительство"),
@@ -465,25 +763,34 @@ impl CraftMenu {
             let top = y + 202. + i as f32 * 75.;
             let chosen = i == self.pick;
             let hovered = s.over(left, top, 289., 66.);
-            let c = if chosen {
-                Color::new(0.25, 0.28, 0.20, 1.)
-            } else if hovered {
-                Color::new(0.18, 0.21, 0.17, 1.)
-            } else {
-                INK
-            };
-            s.rect(left, top, 289., 66., c);
-            s.border(left, top, 289., 66., if chosen { GOLD } else { EDGE });
-            s.text(r.name, left + 13., top + 26., 17., PAPER);
+            if chosen || hovered {
+                s.rect(
+                    left,
+                    top,
+                    289.,
+                    66.,
+                    alpha(GOLD, if chosen { 0.13 } else { 0.06 }),
+                );
+            }
+            s.line(
+                left,
+                top + 65.,
+                left + 289.,
+                top + 65.,
+                1.,
+                if chosen { GOLD } else { EDGE },
+            );
+            product(s, product_id(r, state, p), left + 21., top + 43., 0.96);
+            s.bold().text(r.name, left + 59., top + 26., 17., PAPER);
             s.text(
                 if r.lock.is_none() {
-                    "Доступно"
+                    "Готово к работе"
                 } else {
                     "Недоступно"
                 },
-                left + 13.,
-                top + 50.,
-                12.,
+                left + 59.,
+                top + 49.,
+                13.,
                 if r.lock.is_none() { GOLD } else { MUTED },
             );
             if hovered && s.click {
@@ -521,39 +828,49 @@ impl CraftMenu {
         let r = &rows[self.pick];
         let dx = x + 345.;
         let right = x + 879.;
-        s.text(r.name, dx, y + 228., 25., PAPER);
-        s.wrap(&r.outcome, dx, y + 259., right - dx, 15., MUTED);
-        s.text("ГДЕ", dx, y + 333., 11., GOLD);
-        s.text(r.place, dx, y + 355., 14., PAPER);
-        s.text("МАТЕРИАЛЫ  ·  ЕСТЬ / НУЖНО", dx, y + 389., 11., GOLD);
-        if r.cost.is_empty() {
-            s.text("Материалы не расходуются.", dx, y + 412., 14., PAPER);
+        s.bold().text(r.name, dx, y + 228., 25., PAPER);
+        product(s, product_id(r, state, p), dx + 32., y + 299., 2.9);
+        let result = changes(r, state, p);
+        let stats = dx + 158.;
+        let stat_end = right;
+        for (i, change) in result.iter().enumerate() {
+            let by = y + 258. + i as f32 * 23.;
+            s.text(change.label, stats, by, 14., MUTED);
+            s.right(&change.to, stat_end, by, 15., GOLD);
+            let after_x = stat_end - s.measure(&change.to, 15.) - 12.;
+            s.right("→", after_x, by, 15., MUTED);
+            s.right(&change.from, after_x - 23., by, 14., PAPER);
+        }
+        s.text(r.place, dx, y + 344., 14., MUTED);
+        s.line(dx, y + 355., right, y + 355., 1., EDGE);
+        let cost_label = if self.tab == 0 {
+            "После установки"
         } else {
-            let mut item_x = dx;
-            for (key, n) in &r.cost {
-                let have = count(p, key, 0);
-                let text = format!("{}   {} / {n}", material(key), have);
-                s.text(
-                    &text,
-                    item_x,
-                    y + 412.,
-                    14.,
-                    if have >= *n { PAPER } else { RED_TEAM },
-                );
-                item_x += s.measure(&text, 14.) + 28.;
-            }
+            "Расход из рюкзака"
+        };
+        s.bold().text(cost_label, dx, y + 380., 16., PAPER);
+        let mut item_x = dx + 11.;
+        for (key, n) in &r.cost {
+            let have = count(p, key, 0);
+            let tone = if have >= *n { PAPER } else { RED_TEAM };
+            stock_mark(s, key, item_x, y + 402., tone);
+            s.text(material(key), item_x + 16., y + 406., 14., tone);
+            let result = if have >= *n {
+                format!("{have} → {}", have - n)
+            } else {
+                format!("{have} / {n} нужно")
+            };
+            s.bold().text(&result, item_x + 16., y + 426., 15., tone);
+            item_x += 160.;
+        }
+        if r.cost.is_empty() {
+            s.text("Без расхода материалов", dx, y + 410., 14., MUTED);
         }
         if let Some(why) = &r.lock {
             s.wrap(why, dx, y + 452., right - dx, 14., RED_TEAM);
-        } else if number(p, "messageT", 0.) > 0. {
-            s.wrap(
-                string(p, "message", ""),
-                dx,
-                y + 452.,
-                right - dx,
-                14.,
-                MUTED,
-            );
+        }
+        if r.lock.is_none() && s.over(dx, y + 235., 140., 92.) {
+            s.wrap(&r.outcome, dx, y + 452., right - dx, 13., MUTED);
         }
         let by = y + 496.;
         if r.lock.is_none() {
@@ -561,9 +878,7 @@ impl CraftMenu {
                 return (Action::Craft(r.id.to_owned()), self.tab == 0);
             }
         } else {
-            s.rect(dx, by, 198., 45., alpha(INK, 0.72));
-            s.border(dx, by, 198., 45., EDGE);
-            s.mid(r.button, dx + 99., by + 28., 15., MUTED);
+            s.disabled(dx, by, 198., 45., r.button);
         }
         if r.id == "upgrade" && s.button(dx + 211., by, 217., 45., "Сменить комплект", false)
         {
@@ -606,6 +921,33 @@ mod tests {
         assert!(catalogue(1, &state, &p)[1].lock.is_none());
         state["vehicles"][0]["mgAmmo"] = json!(80);
         assert!(catalogue(1, &state, &p)[1].lock.is_some());
+    }
+    #[test]
+    fn pending_receipt_ignores_previous_notice_and_detects_repeat_ack() {
+        let mut p = json!({"message":"Граната готова","messageT":1.2});
+        let mut receipt = Receipt::pending(&p, 1.);
+        assert_eq!(receipt.message(&p, 1.05), None);
+        p["messageT"] = json!(1.1);
+        assert_eq!(receipt.message(&p, 1.1), None);
+        p["messageT"] = json!(2.5);
+        assert_eq!(receipt.message(&p, 1.3), Some("Граната готова"));
+        p["message"] = json!("Другое событие");
+        assert_eq!(receipt.message(&p, 1.4), None);
+    }
+    #[test]
+    fn result_preview_respects_partial_ammo_and_refinery_space() {
+        let p = json!({"team":"blue","vehicleId":2,"fuel":30,"x":0,"z":0,"powder":5,"metal":4});
+        let world = json!({"vehicles":[{"id":2,"kind":"apc","team":"blue","shellCapacity":12,
+            "shells":11,"mgCapacity":100,"mgAmmo":99,"x":0,"z":0}],
+            "factories":[{"kind":"refinery","team":"blue","x":0,"z":0,"ready":6},
+            {"kind":"workshop","team":"blue","x":0,"z":0}]});
+        let recipes = catalogue(1, &world, &p);
+        let ammo = changes(&recipes[1], &world, &p);
+        assert_eq!((&ammo[0].from[..], &ammo[0].to[..]), ("11", "12"));
+        assert_eq!((&ammo[1].from[..], &ammo[1].to[..]), ("99", "100"));
+        let fuel = changes(&recipes[0], &world, &p);
+        assert_eq!((&fuel[0].from[..], &fuel[0].to[..]), ("30", "32"));
+        assert_eq!((&fuel[1].from[..], &fuel[1].to[..]), ("6", "4"));
     }
     #[test]
     fn crafting_respects_pack_and_allied_station() {

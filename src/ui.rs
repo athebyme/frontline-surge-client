@@ -6,6 +6,8 @@ mod settings_ui;
 use serde_json::Value;
 #[path = "tactical_map.rs"]
 mod tactical_map;
+#[path = "armor_optics.rs"]
+mod armor_optics;
 use tactical_map::TacticalMap;
 #[path = "crafting.rs"]
 mod crafting;
@@ -13,6 +15,8 @@ use crafting::CraftMenu;
 pub(crate) use crafting::friendly_vehicle;
 #[path = "stash_ui.rs"]
 mod stash_ui;
+#[path = "field_hud.rs"]
+mod field_hud;
 use stash_ui::Stash;
 
 const PAPER: Color = Color::new(0.93, 0.96, 0.94, 1.0);
@@ -22,7 +26,6 @@ const BLUE_TEAM: Color = Color::new(0.57, 0.82, 0.85, 1.0);
 const RED_TEAM: Color = Color::new(0.93, 0.63, 0.51, 1.0);
 const INK: Color = Color::new(0.064, 0.094, 0.102, 1.0);
 const EDGE: Color = Color::new(0.75, 0.89, 0.85, 0.36);
-const PLATE: Color = Color::new(0.04, 0.082, 0.09, 0.83);
 
 #[derive(Debug, PartialEq)]
 pub enum Action {
@@ -42,6 +45,7 @@ enum Field {
 }
 
 pub struct Ui {
+    field_font: Font,
     nickname: String,
     choice: &'static str,
     craft_open: bool,
@@ -68,7 +72,9 @@ pub struct Ui {
     menu_font_scale: f32,
 }
 
+#[derive(Clone, Copy)]
 struct Surface<'a> {
+    title_font: Option<&'a Font>,
     font: &'a Font,
     scale: f32,
     w: f32,
@@ -113,6 +119,7 @@ fn kill_source(event: &Value) -> &str {
         (Some("mr7"), _) => "MR-7",
         (Some("vx9"), _) => "VX-9",
         (Some("ar4"), _) => "AR-4",
+        (Some("apc_he"), _) => "ОФ БТР",
         (Some("tank"), _) => "Пушка танка",
         (Some("vehicle_mg"), Some("mbt")) => "Пулемёт танка",
         (Some("vehicle_mg"), Some("apc")) => "Пулемёт БТР",
@@ -223,7 +230,7 @@ impl<'a> Surface<'a> {
             .clamp(0.32, 3.);
         Self::scaled(font, scale)
     }
-    fn inventory(font: &'a Font) -> Self {
+    fn field(font: &'a Font) -> Self {
         let w = screen_width();
         let h = screen_height();
         // Give the three inventory columns more room on a small desktop window.
@@ -233,6 +240,7 @@ impl<'a> Surface<'a> {
     fn scaled(font: &'a Font, scale: f32) -> Self {
         let (mx, my) = mouse_position();
         Self {
+            title_font: None,
             font,
             scale,
             w: screen_width() / scale,
@@ -240,6 +248,16 @@ impl<'a> Surface<'a> {
             pointer: vec2(mx / scale, my / scale),
             click: is_mouse_button_pressed(MouseButton::Left),
         }
+    }
+    fn bold(&self) -> Self {
+        Self {
+            font: self.title_font.unwrap_or(self.font),
+            ..*self
+        }
+    }
+    fn menu_ribbon(&self, x: f32, y: f32, w: f32) {
+        self.rect(x, y, w, 1., alpha(PAPER, 0.27));
+        self.rect(x, y - 1., 48., 3., GOLD);
     }
     fn rect(&self, x: f32, y: f32, w: f32, h: f32, c: Color) {
         draw_rectangle(
@@ -308,22 +326,24 @@ impl<'a> Surface<'a> {
     }
     fn button(&self, x: f32, y: f32, w: f32, h: f32, label: &str, primary: bool) -> bool {
         let hover = self.over(x, y, w, h);
-        let bg = if primary {
-            if hover {
-                Color::new(1., 0.81, 0.48, 1.)
+        if primary || hover {
+            let fill = if primary {
+                if hover {
+                    PAPER
+                } else {
+                    GOLD
+                }
             } else {
-                GOLD
-            }
-        } else if hover {
-            Color::new(0.20, 0.24, 0.19, 0.96)
+                alpha(PAPER, 0.15)
+            };
+            self.rect(x, y, w - 7., h, fill);
+            let xy = |xx, yy| vec2(xx * self.scale, yy * self.scale);
+            draw_triangle(xy(x + w - 7., y), xy(x + w, y), xy(x + w - 7., y + h), fill);
         } else {
-            PLATE
-        };
-        self.rect(x, y, w, h, bg);
-        if !primary {
-            self.border(x, y, w, h, if hover { GOLD } else { EDGE });
+            self.rect(x, y, w, h, alpha(INK, 0.48));
+            self.line(x, y + h - 1., x + w, y + h - 1., 1., alpha(MUTED, 0.45));
         }
-        self.mid(
+        self.bold().mid(
             label,
             x + w * 0.5,
             y + h * 0.5 + 5.,
@@ -333,9 +353,14 @@ impl<'a> Surface<'a> {
         hover && self.click
     }
     fn disabled(&self, x: f32, y: f32, w: f32, h: f32, label: &str) {
-        self.rect(x, y, w, h, alpha(INK, 0.7));
-        self.border(x, y, w, h, EDGE);
-        self.mid(label, x + w * 0.5, y + h * 0.5 + 5., 14., MUTED);
+        self.line(x, y + h - 1., x + w, y + h - 1., 1., alpha(MUTED, 0.23));
+        self.bold().mid(
+            label,
+            x + w * 0.5,
+            y + h * 0.5 + 5.,
+            14.,
+            alpha(MUTED, 0.68),
+        );
     }
     fn wrap(&self, text: &str, x: f32, baseline: f32, width: f32, size: f32, c: Color) {
         let mut line = String::new();
@@ -439,14 +464,15 @@ impl<'a> Surface<'a> {
         self.text("FRONTLINE  SURGE", x + 47., y + 25., 16., PAPER);
     }
     fn panel(&self, w: f32, h: f32, kicker: &str, title: &str) -> (f32, f32) {
-        self.rect(0., 0., self.w, self.h, alpha(INK, 0.69));
+        self.rect(0., 0., self.w, self.h, alpha(INK, 0.90));
         let x = (self.w - w) * 0.5;
         let y = (self.h - h) * 0.5;
-        self.rect(x, y, w, h, Color::new(0.095, 0.14, 0.15, 0.98));
-        self.border(x, y, w, h, EDGE);
-        self.rect(x, y, w, 3., GOLD);
-        self.text(kicker, x + 27., y + 37., 12., GOLD);
-        self.text(title, x + 26., y + 89., 39., PAPER);
+        let heading = self.bold();
+        self.line(x + 27., y + 28., x + 34., y + 33., 2.8, GOLD);
+        self.line(x + 34., y + 33., x + 41., y + 28., 2.8, GOLD);
+        heading.text(kicker, x + 50., y + 37., 12., GOLD);
+        heading.text(title, x + 25., y + 85., 40., PAPER);
+        self.menu_ribbon(x + 27., y + 98., w - 54.);
         (x, y)
     }
 }
@@ -493,6 +519,7 @@ fn parse_port(value: &str) -> Result<u16, String> {
 impl Ui {
     pub fn new() -> Self {
         Self {
+            field_font: load_ttf_font_from_bytes(include_bytes!("../assets/field-labels.ttf")).expect("Embedded field font"),
             nickname: "Беркут".into(),
             choice: "auto",
             craft_open: false,
@@ -714,11 +741,12 @@ impl Ui {
         if self.menu_font_scale != s.scale {
             // Growing Macroquad's glyph atlas mid-frame invalidates the UVs of
             // earlier draw calls. Warm the title and UI text before drawing.
-            s.measure("ЛИНИЯ ФРОНТА", 83.);
+            s.bold().measure("ЛИНИЯ ФРОНТА", 83.);
             s.measure("FRONTLINE SURGE", 16.);
             let letters = "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯабвгдеёжзийклмнопрстуфхцчшщъыьэюя0123456789.: / →·";
             for size in [11., 12., 14., 15., 17.] {
                 s.measure(letters, size);
+                s.bold().measure(letters, size);
             }
             self.menu_font_scale = s.scale;
         }
@@ -742,11 +770,10 @@ impl Ui {
             12.,
             GOLD,
         );
-        // Deliberately offset the second strike for a heavy screen-printed title.
+        let display = s.bold();
         for (label, base, col) in [("ЛИНИЯ", y + 87., PAPER), ("ФРОНТА", y + 161., GOLD)]
         {
-            s.text(label, x - 2., base, 83., col);
-            s.text(label, x, base, 83., col);
+            display.ink(label, x, base, 83., col);
         }
         s.text(
             "Промышленная долина, сектор Сен-Лоран. Две команды",
@@ -823,17 +850,24 @@ impl Ui {
     }
     fn controls(&mut self, s: &Surface) -> Action {
         let (x, y) = s.panel(684., 542., "СПРАВКА ОПЕРАТОРА", "Управление");
-        for (i, label) in ["Пехота", "Снабжение", "Техника", "Разведка"]
+        for (i, label) in ["Пехота", "Снабжение", "Техника", "Разведка", "Фраги"]
             .iter()
             .enumerate()
         {
-            let xx = x + 28. + i as f32 * 150.;
-            if s.button(xx, y + 104., 140., 33., label, false) {
+            let xx = x + 28. + i as f32 * 127.;
+            if s.button(xx, y + 104., 121., 33., label, false) {
                 self.help_page = i as u8;
             }
             if self.help_page == i as u8 {
-                s.rect(xx, y + 135., 140., 2., GOLD);
+                s.rect(xx, y + 135., 121., 2., GOLD);
             }
+        }
+        if self.help_page == 4 {
+            field_hud::legend(s, x + 30., y + 185.);
+            if s.button(x + 27., y + 493., 141., 35., "Назад", true) {
+                self.help = false;
+            }
+            return Action::None;
         }
         let rows: &[(&str, &str)] = match self.help_page {
             1 => &[
@@ -854,7 +888,10 @@ impl Ui {
             2 => &[
                 ("F", "Занять место водителя / выйти из машины"),
                 ("W S / A D", "Газ и тормоз / поворот"),
-                ("ЛКМ / ПКМ в танке", "Пушка / пулемёт"),
+                (
+                    "ЛКМ / ПКМ",
+                    "Танк: пушка / пулемёт. БТР: очередь ОФ / пулемёт",
+                ),
                 ("G у техники", "Заправить или отремонтировать машину"),
                 (
                     "V  /  U",
@@ -864,14 +901,23 @@ impl Ui {
                     "T у грузовика",
                     "Выбери материал и количество для погрузки или выгрузки",
                 ),
-                ("Y / колесо", "Сменить вид / приблизить или отдалить камеру"),
+                (
+                    "Y / колесо / N",
+                    "Вид / дистанция / дневной, ночной и тепловизионный канал",
+                ),
             ],
             3 => &[
-                ("J", "Выпустить или отозвать личный разведдрон"),
+                (
+                    "J / Shift+J",
+                    "Запуск, зависание или возврат в камеру / полный отзыв",
+                ),
                 ("W A S D", "Горизонтальный полёт"),
                 ("Shift / ПКМ", "Подняться / снизиться"),
                 ("Мышь / ЛКМ", "Повернуть камеру / оставить командную метку"),
-                ("Z / X", "Включить цифровой зум ×2 / дать импульс"),
+                (
+                    "Z / X",
+                    "Зум ×2 / урон бойцам и технике в радиусе 6,8 м",
+                ),
                 (
                     "Запас хода",
                     "Батареи хватает на 60 секунд. Дальность от оператора 65 м.",
@@ -913,196 +959,19 @@ impl Ui {
         }
         Action::None
     }
-    fn compass(s: &Surface, yaw: f32) {
-        let heading = yaw.to_degrees();
-        let center = s.w * 0.5;
-        for step in ((heading - 50.) / 5.).floor() as i32..=((heading + 50.) / 5.).ceil() as i32 {
-            let deg = step * 5;
-            let a = deg.rem_euclid(360);
-            let x = center + (deg as f32 - heading) * 3.1;
-            let major = a % 45 == 0;
-            s.line(
-                x,
-                32.,
-                x,
-                if major { 40. } else { 35. },
-                1.2,
-                alpha(PAPER, 0.85),
-            );
-            if major || a % 15 == 0 {
-                let text = if major {
-                    ["С", "СВ", "В", "ЮВ", "Ю", "ЮЗ", "З", "СЗ"][(a / 45) as usize].to_owned()
-                } else {
-                    a.to_string()
-                };
-                s.mid(&text, x + 1., 26., 12., INK);
-                s.mid(&text, x, 25., 12., PAPER);
-            }
-        }
-        s.line(center - 3., 45., center, 40., 1.8, GOLD);
-        s.line(center, 40., center + 3., 45., 1.8, GOLD);
-    }
-    fn drone_hud(s: &Surface, state: &Value, p: &Value, d: &Value, zoom: bool, camera: &Camera3D) {
-        let a = Color::new(0.41, 0.91, 0.81, 1.);
-        let cx = s.w * 0.5;
-        let cy = s.h * 0.5;
-        let (yaw, pitch) = crate::motion::view_angles(camera.target - camera.position);
-        Self::compass(s, yaw);
-        for (x, y, dx, dy) in [
-            (24., 23., 1., 1.),
-            (s.w - 24., 23., -1., 1.),
-            (24., s.h - 23., 1., -1.),
-            (s.w - 24., s.h - 23., -1., -1.),
-        ] {
-            s.line(x, y, x + dx * 31., y, 1.4, a);
-            s.line(x, y, x, y + dy * 31., 1.4, a);
-        }
-        for (dx, dy) in [(-1., -1.), (1., -1.), (-1., 1.), (1., 1.)] {
-            let x = cx + dx * 16.;
-            let y = cy + dy * 12.;
-            s.line(x, y, x - dx * 6., y, 1.3, a);
-            s.line(x, y, x, y - dy * 6., 1.3, a);
-        }
-        s.rect(cx - 1., cy - 1., 2., 2., a);
-        s.rect(36., 33., 201., 67., PLATE);
-        s.rect(47., 47., 5., 5., a);
-        s.text("КАНАЛ ДРОНА", 61., 54., 13., a);
-        s.text(
-            if zoom { "FPV   ×2" } else { "FPV   ×1" },
-            47.,
-            83.,
-            23.,
-            PAPER,
-        );
-        let signal = (number(d, "signal", 1.).clamp(0., 1.) * 100.).round() as i32;
-        s.rect(s.w - 230., 33., 194., 67., PLATE);
-        s.text("ВИДЕОСВЯЗЬ", s.w - 217., 55., 11., a);
-        s.text(&format!("{}%", signal), s.w - 217., 83., 20., PAPER);
-        for i in 0..5 {
-            let h = 5. + i as f32 * 3.;
-            s.rect(
-                s.w - 125. + i as f32 * 11.,
-                83. - h,
-                7.,
-                h,
-                if i * 20 < signal { a } else { EDGE },
-            );
-        }
-        let forward = (camera.target - camera.position).normalize_or_zero();
-        let right = forward.cross(Vec3::Y).normalize_or_zero();
-        let roll = camera.up.dot(right).atan2(camera.up.dot(right.cross(forward)));
-        let horizon = cy + pitch * 54.;
-        let (sin, cos) = (-roll).sin_cos();
-        for sign in [-1., 1.] {
-            for offset in [35., 55.] {
-                let far = offset + if offset == 35. { 13. } else { 8. };
-                s.line(
-                    cx + sign * offset * cos,
-                    horizon + sign * offset * sin,
-                    cx + sign * far * cos,
-                    horizon + sign * far * sin,
-                    1.3,
-                    alpha(a, 0.85),
-                );
-            }
-        }
-        let speed = number(d, "speed", 0.).max(0.);
-        let climb = number(d, "vSpeed", 0.);
-        let tx = 36.;
-        let ty = s.h * 0.5 - 29.;
-        s.rect(tx, ty, 120., 52., PLATE);
-        s.text("СКОРОСТЬ / ВЕРТ.", tx + 8., ty + 16., 10., MUTED);
-        s.text(
-            &format!("{:.0}  /  {:+.0} м/с", speed, climb),
-            tx + 8.,
-            ty + 39.,
-            15.,
-            a,
-        );
-        let battery = number(d, "battery", 0.).clamp(0., 60.);
-        let altitude = number(d, "y", 0.).max(0.);
-        let range = (number(d, "x", 0.) - number(p, "x", 0.))
-            .hypot(number(d, "z", 0.) - number(p, "z", 0.));
-        let y = s.h - 120.;
-        s.rect(36., y, 274., 83., PLATE);
-        s.text("БАТАРЕЯ", 48., y + 19., 10., MUTED);
-        s.right(
-            &clock(battery),
-            s.w.min(296.),
-            y + 21.,
-            16.,
-            if battery < 12. { RED_TEAM } else { a },
-        );
-        s.rect(48., y + 29., 248., 3., EDGE);
-        s.rect(48., y + 29., 248. * battery as f32 / 60., 3., a);
-        s.text(
-            &format!("Высота   {:.0} м", altitude),
-            48.,
-            y + 55.,
-            14.,
-            PAPER,
-        );
-        s.right(
-            &format!("Удаление   {:.0} м", range),
-            296.,
-            y + 55.,
-            14.,
-            PAPER,
-        );
-        s.text("Shift   вверх     ПКМ   вниз", 48., y + 75., 12., a);
-        let newest = state["markers"].as_array().into_iter().flatten().find(|m| {
-            m["team"] == p["team"] && m["owner"] == p["id"] && number(m, "remaining", 0.) > 0.
-        });
-        let x = s.w - 310.;
-        s.rect(x, y, 274., 83., PLATE);
-        s.text("КОМАНДНАЯ МЕТКА", x + 12., y + 19., 10., MUTED);
-        s.text(
-            &newest.map_or_else(
-                || "ЛКМ  Отметить точку".to_owned(),
-                |m| format!("Отмечено   ·   {} с", count(m, "remaining", 0)),
-            ),
-            x + 12.,
-            y + 46.,
-            16.,
-            PAPER,
-        );
-        s.text(
-            "Z  Зум   ·   M  Карта   ·   J  Отозвать",
-            x + 12.,
-            y + 72.,
-            12.,
-            a,
-        );
-        let charges = count(d, "charges", 0);
-        let pulse = if charges == 0 {
-            "Импульс израсходован"
-        } else if battery < 14. {
-            "Для импульса мало энергии"
-        } else {
-            "X  Импульс  ·  14 с батареи"
-        };
-        s.rect(x, y - 32., 274., 26., PLATE);
-        s.text(
-            pulse,
-            x + 12.,
-            y - 14.,
-            13.,
-            if charges > 0 && battery >= 14. {
-                a
-            } else {
-                MUTED
-            },
-        );
-    }
     fn vehicle_sight(s: &Surface, camera: &Camera3D, v: &Value, p: &Value) {
         let (Some(yaw), Some(pitch)) = (v["turretYaw"].as_f64(), p["pitch"].as_f64()) else {
             return;
         };
         let matrix = camera.matrix();
         let viewport = vec2(s.w, s.h);
-        let yaw = yaw as f32;
-        let pitch = pitch as f32;
-        let cannon = v["kind"] == "mbt" && !is_mouse_button_down(MouseButton::Right);
+        let yaw = number(p, "gunYaw", yaw) as f32;
+        let pitch = number(p, "gunPitch", pitch) as f32;
+        let primary = v["kind"] == "mbt" || number(v, "shellCapacity", 0.) > 0.;
+        let cannon = primary && !is_mouse_button_down(MouseButton::Right);
+        if p["onboardOptic"] == true {
+            armor_optics::draw(s, camera, p, v);
+        }
         let mg = mg_position(matrix, p, yaw, pitch, viewport);
         if cannon && !p["mgSight"].is_null() {
             // The secondary marker stays visible while lining up the first MG shot.
@@ -1113,7 +982,7 @@ impl Ui {
             }
         }
         let at = if cannon {
-            sight_position(matrix, crate::dir(yaw, pitch.clamp(-0.6, 0.6)).extend(0.), viewport)
+            sight_position(matrix, crate::dir(yaw, pitch).extend(0.), viewport)
         } else {
             mg
         };
@@ -1140,15 +1009,16 @@ impl Ui {
         }
     }
     fn hud(&mut self, s: &Surface, state: &Value, p: &Value, camera: &Camera3D) {
-        if let Some(d) = own_drone(state, p) {
-            Self::drone_hud(s, state, p, d, self.drone_zoom, camera);
-            if self.scoreboard {
-                Self::board(s, state, p);
-            }
+        if self.scoreboard {
+            field_hud::scoreboard(s, state, p);
             return;
         }
-        let players = &state["players"];
-        let score = &state["scores"];
+        field_hud::shade(s);
+        if let Some(d) = own_drone(state, p) {
+            field_hud::drone(s, state, p, d, self.drone_zoom, camera);
+            field_hud::feed(s, state, 91.);
+            return;
+        }
         let alive = flag(p, "alive", true);
         let building = flag(p, "buildMode", false);
         let local_team = string(p, "team", "blue");
@@ -1192,58 +1062,9 @@ impl Ui {
                 );
             }
         }
-        let team_color = if local_team == "blue" {
-            BLUE_TEAM
-        } else {
-            RED_TEAM
-        };
-        let team = if local_team == "blue" {
-            "Синие"
-        } else {
-            "Красные"
-        };
-        let online = players.as_array().map_or(0, Vec::len);
-        let cap = count(state, "fragLimit", 0);
-        let detail = if online < 2 {
-            "Ждём соперника".into()
-        } else if cap > 0 {
-            format!("До {cap} очков")
-        } else {
-            format!("В сети {online}")
-        };
-        s.rect(22., 22., 210., 62., PLATE);
-        s.rect(22., 22., 3., 62., team_color);
-        s.text(team, 35., 42., 13., team_color);
-        s.right(&detail, 220., 42., 12., MUTED);
-        let (other_team, other_color) = if local_team == "blue" {
-            ("red", RED_TEAM)
-        } else {
-            ("blue", BLUE_TEAM)
-        };
-        s.text(
-            &count(score, local_team, 0).to_string(),
-            35.,
-            73.,
-            26.,
-            team_color,
-        );
-        s.right(
-            &count(score, other_team, 0).to_string(),
-            220.,
-            73.,
-            26.,
-            other_color,
-        );
-        s.mid(
-            &clock(number(state, "remaining", 420.)),
-            127.,
-            70.,
-            20.,
-            PAPER,
-        );
-        Self::compass(s, crate::motion::view_angles(camera.target - camera.position).0);
+        field_hud::match_score(s, state, p);
+        field_hud::compass(s, crate::motion::view_angles(camera.target - camera.position).0);
         let armed = vehicle.filter(|v| matches!(string(v, "kind", ""), "mbt" | "apc"));
-        let vehicle_gun = armed.is_some();
         if alive && !building {
             if let Some(v) = armed {
                 Self::vehicle_sight(s, camera, v, p);
@@ -1285,263 +1106,10 @@ impl Ui {
                 }
             }
         }
-        let edge = 22.;
-        let bottom = s.h - edge;
-        let hp = count(p, "hp", 100).max(0);
-        let health_color = if hp <= 30 { RED_TEAM } else { team_color };
-        let stamina = number(p, "stamina", 100.) as f32;
-        let health_y = bottom - 83.;
-        s.rect(edge, health_y, 206., 83., PLATE);
-        s.rect(edge, health_y, 3., 83., health_color);
-        s.text("ЗДОРОВЬЕ", 34., health_y + 22., 12., MUTED);
-        s.right(&hp.to_string(), 214., health_y + 29., 27., health_color);
-        s.rect(34., health_y + 35., 180., 5., EDGE);
-        s.rect(
-            34.,
-            health_y + 35.,
-            180. * (hp as f32 / 100.).clamp(0., 1.),
-            5.,
-            health_color,
-        );
-        if let Some(v) = vehicle {
-            s.text("Курс", 34., bottom - 24., 13., MUTED);
-            s.text(&heading_label(v, "yaw"), 76., bottom - 24., 16., PAPER);
-            if vehicle_gun {
-                s.text("Башня", 122., bottom - 24., 13., MUTED);
-                s.right(
-                    &heading_label(v, "turretYaw"),
-                    214.,
-                    bottom - 24.,
-                    16.,
-                    PAPER,
-                );
-            }
-            s.text("I  Инвентарь", 34., bottom - 8., 11., MUTED);
-        } else {
-            s.text("Выносливость", 34., health_y + 58., 13., MUTED);
-            s.rect(138., health_y + 52., 76., 3., EDGE);
-            s.rect(
-                138.,
-                health_y + 52.,
-                76. * (stamina / 100.).clamp(0., 1.),
-                3.,
-                GOLD,
-            );
-            s.text(
-                "I Рюкзак   K Крафт   B Стройка",
-                34.,
-                bottom - 7.,
-                11.,
-                MUTED,
-            );
-            let gathering = building || factory.is_some() || string(p, "hint", "").contains("[E]");
-            if gathering {
-                let by = health_y - 57.;
-                s.rect(edge, by, 303., 52., PLATE);
-                for (i, (key, name)) in MATERIALS.iter().enumerate() {
-                    let xx = edge + 10. + i as f32 * 57.;
-                    s.text(name, xx, by + 17., 12., MUTED);
-                    s.text(&count(p, key, 0).to_string(), xx, by + 41., 20., PAPER);
-                }
-            }
-        }
-        if let Some(v) = vehicle {
-            let capacity = count(v, "cargoCapacity", 0);
-            let kind = string(v, "kind", "");
-            let kit = kit_name(string(v, "upgrade", ""));
-            let level = match count(v, "upgradeLevel", 0) {
-                1 => " I",
-                2 => " II",
-                _ => "",
-            };
-            let w = 326.;
-            let x = s.w - edge - w;
-            let y = bottom
-                - 122.
-                - if capacity > 0 { 25. } else { 0. }
-                - if vehicle_gun { 28. } else { 0. };
-            s.rect(x, y, w, bottom - y, PLATE);
-            s.rect(x, y, 3., bottom - y, BLUE_TEAM);
-            s.text(vehicle_name(kind), x + 13., y + 26., 21., PAPER);
-            let speed = (number(v, "speed", 0.).abs() * 3.6).round();
-            s.right(
-                &format!("{speed} км/ч"),
-                x + w - 13.,
-                y + 25.,
-                19.,
-                BLUE_TEAM,
-            );
-            for (i, (label, key, max_key, color)) in [
-                ("Корпус", "hp", "maxHp", BLUE_TEAM),
-                ("Топливо", "fuel", "maxFuel", GOLD),
-            ]
-            .iter()
-            .enumerate()
-            {
-                let xx = x + 13. + i as f32 * 154.;
-                let val = number(v, key, 0.);
-                let max = number(v, max_key, 100.).max(1.);
-                let ratio = (val / max).clamp(0., 1.) as f32;
-                s.text(label, xx, y + 52., 12., MUTED);
-                s.right(
-                    &format!("{} / {}", val.ceil() as i32, max.ceil() as i32),
-                    xx + 144.,
-                    y + 52.,
-                    14.,
-                    PAPER,
-                );
-                s.rect(xx, y + 59., 144., 4., EDGE);
-                s.rect(
-                    xx,
-                    y + 59.,
-                    144. * ratio,
-                    4.,
-                    if ratio <= 0.2 { RED_TEAM } else { *color },
-                );
-            }
-            let mut row = y + 84.;
-            if vehicle_gun {
-                if kind == "mbt" {
-                    s.text("ЛКМ  Пушка", x + 13., row, 13., MUTED);
-                    s.right(
-                        &count(v, "shells", 0).to_string(),
-                        x + 146.,
-                        row,
-                        20.,
-                        PAPER,
-                    );
-                }
-                let xx = x + if kind == "mbt" { 167. } else { 13. };
-                s.text(
-                    if kind == "mbt" {
-                        "ПКМ  Пулемёт"
-                    } else {
-                        "ЛКМ  Пулемёт"
-                    },
-                    xx,
-                    row,
-                    13.,
-                    MUTED,
-                );
-                s.right(
-                    &count(v, "mgAmmo", 0).to_string(),
-                    x + w - 13.,
-                    row,
-                    20.,
-                    PAPER,
-                );
-                row += 28.;
-            }
-            if capacity > 0 {
-                let cargo = &v["cargo"];
-                let total = MATERIALS
-                    .iter()
-                    .map(|(key, _)| count(cargo, key, 0))
-                    .sum::<i32>();
-                let mut goods = MATERIALS.iter().filter(|(key, _)| count(cargo, key, 0) > 0);
-                let manifest = match goods.next() {
-                    Some((key, name)) => match goods.count() {
-                        0 => format!("{name} ×{}", count(cargo, key, 0)),
-                        other => format!("{name} ×{} · ещё {other}", count(cargo, key, 0)),
-                    },
-                    None => "Пусто".into(),
-                };
-                s.text(
-                    &format!("T  Кузов   {total} / {capacity}"),
-                    x + 13.,
-                    row,
-                    15.,
-                    PAPER,
-                );
-                s.right(&manifest, x + w - 13., row, 13., MUTED);
-                row += 25.;
-            }
-            s.text(
-                &format!("Комплект · {kit}{level}"),
-                x + 13.,
-                row,
-                13.,
-                MUTED,
-            );
-            s.line(x + 13., bottom - 27., x + w - 13., bottom - 27., 1., EDGE);
-            s.text(
-                "Y  Вид   ·   Колесо  Зум   ·   M  Карта",
-                x + 13.,
-                bottom - 9.,
-                12.,
-                MUTED,
-            );
-            s.right("F  Выйти", x + w - 13., bottom - 9., 12., PAPER);
-        } else {
-            let x = s.w - edge - 234.;
-            let y = bottom - 103.;
-            let weapon = match string(p, "weapon", "mr7") {
-                "vx9" => "VX-9",
-                "ar4" => "AR-4",
-                _ => "MR-7",
-            };
-            let ammo = count(p, "ammo", 0);
-            let reserve = count(p, "reserve", 0);
-            let reload = number(p, "reload", 0.);
-            let ammo_color = if ammo == 0 { RED_TEAM } else { PAPER };
-            s.rect(x, y, 234., 103., PLATE);
-            s.rect(x, y, 3., 103., GOLD);
-            s.text(weapon, x + 13., y + 23., 19., PAPER);
-            s.right(
-                &format!("N  {}", crafting::mode_name(string(p, "fireMode", "semi"))),
-                x + 221.,
-                y + 22.,
-                12.,
-                MUTED,
-            );
-            s.text(&ammo.to_string(), x + 12., y + 63., 40., ammo_color);
-            s.text(
-                &format!("/  {reserve}"),
-                x + 19. + s.measure(&ammo.to_string(), 40.),
-                y + 61.,
-                20.,
-                MUTED,
-            );
-            s.right(
-                &format!("H  Гранаты ×{}", count(p, "grenades", 0)),
-                x + 221.,
-                y + 59.,
-                13.,
-                PAPER,
-            );
-            if reload > 0. {
-                let duration = number(p, "reloadTime", 2.).max(0.01);
-                s.rect(x + 13., y + 70., 208., 3., EDGE);
-                s.rect(
-                    x + 13.,
-                    y + 70.,
-                    208. * (1. - reload / duration).clamp(0., 1.) as f32,
-                    3.,
-                    GOLD,
-                );
-                s.text("Перезарядка", x + 13., bottom - 9., 13., GOLD);
-            } else {
-                s.text(
-                    if ammo == 0 && reserve > 0 {
-                        "R  Перезарядить"
-                    } else {
-                        "1–3  Оружие"
-                    },
-                    x + 13.,
-                    bottom - 9.,
-                    12.,
-                    if ammo == 0 { GOLD } else { MUTED },
-                );
-                let cooldown = count(p, "droneCooldown", 0);
-                let drone = if cooldown > 0 {
-                    format!("M Карта   J {cooldown} с")
-                } else {
-                    "M Карта   J Дрон".into()
-                };
-                s.right(&drone, x + 221., bottom - 9., 12., MUTED);
-            }
-        }
-        let mut sy = if vehicle.is_some() { health_y - 15. } else { s.h * 0.655 };
+        let gathering = building || factory.is_some() || string(p, "hint", "").contains("[E]");
+        field_hud::soldier(s, p, vehicle, gathering);
+        if let Some(v) = vehicle { field_hud::vehicle(s, v); } else { field_hud::kit(s, p); }
+        let mut sy = if vehicle.is_some() { s.h - 111. } else { s.h - 130. };
         let station = if building {
             None
         } else {
@@ -1559,11 +1127,20 @@ impl Ui {
         let seated_hint;
         let hint = if vehicle.is_some() && hint.starts_with("[F] Выйти") {
             // The vehicle card already lists these persistent controls.
-            seated_hint = hint.split('·').map(str::trim)
-                .filter(|part| !matches!(*part, "[F] Выйти" | "[ЛКМ] Пушка" | "[ПКМ] Пулемёт" | "[ЛКМ] Пулемёт" | "[T] Груз"))
-                .collect::<Vec<_>>().join("   ·   ");
+            seated_hint = hint
+                .split('·')
+                .map(str::trim)
+                .filter(|part| {
+                    !matches!(*part, "[F] Выйти" | "[T] Груз")
+                        && !part.starts_with("[ЛКМ]")
+                        && !part.starts_with("[ПКМ]")
+                })
+                .collect::<Vec<_>>()
+                .join("   ·   ");
             seated_hint.as_str()
-        } else { hint };
+        } else {
+            hint
+        };
         let msg = if number(p, "messageT", 0.) > 0. {
             string(p, "message", "")
         } else {
@@ -1635,155 +1212,20 @@ impl Ui {
                 if tx.is_empty() {
                     continue;
                 }
-                let seated = vehicle.is_some();
-                let max_w = if seated { s.w * 0.46 } else { s.w - 80. };
-                let w = (s.measure(tx, 15.) + 22.).min(max_w);
-                let x = if seated { edge } else { cx - w / 2. };
-                s.rect(x, sy - 18., w, 25., PLATE);
-                s.rect(x, sy - 18., 2., 25., col);
-                s.text(&s.shorten(tx, 15., w - 18.), x + 11., sy, 15., col);
-                sy += if seated { -29. } else { 29. };
+                field_hud::prompt(s, tx, sy, col, vehicle.is_some());
+                sy -= 26.;
             }
         } else {
-            s.rect(cx - 183., cy - 52., 366., 104., PLATE);
-            s.mid("БОЕЦ ВЫБЫЛ", cx, cy - 14., 12., GOLD);
-            s.mid(
-                &format!(
-                    "Возвращение в бой через {} с",
-                    count(p, "respawnIn", 0).max(0)
-                ),
+            s.ink_mid("Боец выбыл", cx, cy - 12., 29., PAPER);
+            s.ink_mid(
+                &format!("До возрождения   {} с", count(p, "respawnIn", 0).max(0)),
                 cx,
-                cy + 23.,
-                20.,
-                PAPER,
+                cy + 18.,
+                18.,
+                GOLD,
             );
         }
-        if let Some(events) = state["events"].as_array() {
-            let mut line = 0;
-            let elapsed = number(state, "elapsed", 0.);
-            for e in events
-                .iter()
-                .rev()
-                .filter(|e| {
-                    string(e, "type", "") == "kill" && elapsed - number(e, "at", elapsed) < 5.5
-                })
-                .take(3)
-            {
-                let a = string(e, "actorName", "Боец");
-                let b = string(e, "targetName", "Боец");
-                let ally = string(e, "team", "blue") == "blue";
-                let source = s.shorten(kill_source(e), 12., 142.);
-                let sw = s.measure(&source, 12.);
-                let max_name = ((s.w * 0.37 - sw - 38.) * 0.5).clamp(43., 148.);
-                let a = s.shorten(a, 13., max_name);
-                let b = s.shorten(b, 13., max_name);
-                let aw = s.measure(&a, 13.);
-                let bw = s.measure(&b, 13.);
-                let width = aw + sw + bw + 34.;
-                let x = s.w - width - 24.;
-                let y = 24. + line as f32 * 25.;
-                line += 1;
-                s.rect(x, y, width, 22., PLATE);
-                s.text(
-                    &a,
-                    x + 7.,
-                    y + 16.,
-                    13.,
-                    if ally { BLUE_TEAM } else { RED_TEAM },
-                );
-                s.text(&source, x + aw + 16., y + 16., 12., GOLD);
-                s.text(
-                    &b,
-                    x + aw + sw + 26.,
-                    y + 16.,
-                    13.,
-                    if ally { RED_TEAM } else { BLUE_TEAM },
-                );
-            }
-        }
-        if self.scoreboard {
-            Self::board(s, state, p);
-        }
-    }
-    fn board(s: &Surface, state: &Value, local: &Value) {
-        let (x, y) = s.panel(964., 492., "КОМАНДНЫЙ БОЙ", "Таблица счёта");
-        s.text(
-            "Когда истечёт время, победит команда с большим числом фрагов.",
-            x + 28.,
-            y + 116.,
-            14.,
-            MUTED,
-        );
-        let players = state["players"]
-            .as_array()
-            .map(Vec::as_slice)
-            .unwrap_or(&[]);
-        for (i, (team, title, tint)) in [("blue", "Синие", BLUE_TEAM), ("red", "Красные", RED_TEAM)]
-            .into_iter()
-            .enumerate()
-        {
-            let xx = x + 28. + i as f32 * 460.;
-            s.text(
-                &format!("{}   /   {} фр.", title, count(&state["scores"], team, 0)),
-                xx,
-                y + 157.,
-                22.,
-                tint,
-            );
-            s.text("ПОЗЫВНОЙ", xx, y + 188., 10., MUTED);
-            for (right, label) in [
-                (230., "ОЧКИ"),
-                (298., "ФРАГИ"),
-                (361., "ПОМОЩЬ"),
-                (428., "СМЕРТИ"),
-            ] {
-                s.right(label, xx + right, y + 188., 10., MUTED);
-            }
-            s.line(xx, y + 197., xx + 428., y + 197., 1., EDGE);
-            let mut members: Vec<_> = players
-                .iter()
-                .filter(|p| string(p, "team", "") == team)
-                .collect();
-            members.sort_by_key(|p| {
-                (
-                    std::cmp::Reverse(count(p, "points", 0)),
-                    std::cmp::Reverse(count(p, "kills", 0)),
-                    count(p, "deaths", 0),
-                )
-            });
-            for (j, p) in members.iter().take(10).enumerate() {
-                let by = y + 220. + j as f32 * 23.;
-                let tint = if p["id"] == local["id"] { GOLD } else { PAPER };
-                s.text(
-                    &s.shorten(string(p, "name", "Боец"), 14., 168.),
-                    xx,
-                    by,
-                    14.,
-                    tint,
-                );
-                for (right, key) in [
-                    (230., "points"),
-                    (298., "kills"),
-                    (361., "assists"),
-                    (428., "deaths"),
-                ] {
-                    s.right(
-                        &count(p, key, 0).to_string(),
-                        xx + right,
-                        by,
-                        14.,
-                        if key == "points" { tint } else { PAPER },
-                    );
-                }
-            }
-        }
-        s.text(
-            "Личный счёт: 100 за фраг, 50 за помощь.",
-            x + 28.,
-            y + 470.,
-            13.,
-            MUTED,
-        );
+        field_hud::feed(s, state, 45.);
     }
     pub fn draw(
         &mut self,
@@ -1810,8 +1252,7 @@ impl Ui {
             let s = Surface::new(font);
             let x = s.w - 88.;
             let y = if mode == "menu" { s.h - 47. } else { 4. };
-            s.rect(x, y, 65., 17., PLATE);
-            s.right(
+            s.ink_right(
                 &format!(
                     "{} FPS",
                     if self.fps > 0. {
@@ -1839,11 +1280,13 @@ impl Ui {
         camera: &Camera3D,
     ) -> Action {
         set_default_camera();
-        let s = if mode == "playing" && self.inventory_open {
-            Surface::inventory(font)
+        let title = self.field_font.clone();
+        let mut s = if mode == "playing" && self.inventory_open {
+            Surface::field(font)
         } else {
             Surface::new(font)
         };
+        s.title_font = Some(&title);
         if self.settings_open {
             if mode == "menu" || mode == "pause" {
                 return self.preferences(&s);
@@ -1903,7 +1346,7 @@ impl Ui {
                         self.map_open = false;
                     }
                 } else {
-                    self.hud(&s, state, local, camera);
+                    self.hud(&Surface::field(&title), state, local, camera);
                 }
                 Action::None
             }

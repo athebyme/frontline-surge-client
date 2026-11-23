@@ -58,7 +58,13 @@ fn nearby_piles<'a>(state: &'a Value, p: &Value) -> Vec<&'a Value> {
 }
 
 // Pictograms follow the same material order in both ledgers.
-fn material_symbol(s: &Surface, kind: usize, x: f32, y: f32, color: macroquad::prelude::Color) {
+pub(super) fn material_symbol(
+    s: &Surface,
+    kind: usize,
+    x: f32,
+    y: f32,
+    color: macroquad::prelude::Color,
+) {
     let stroke = |ax, ay, bx, by| s.line(x + ax, y + ay, x + bx, y + by, 1.7, color);
     let edges: &[(f32, f32, f32, f32)] = match kind {
         0 => &[
@@ -158,9 +164,8 @@ impl Stash {
                 BLUE_TEAM,
             ),
         ] {
-            s.rect(left, y + 115., col, 55., alpha(INK, 0.78));
-            s.rect(left, y + 115., 3., 55., accent);
-            s.text(title, left + 12., y + 139., 20., PAPER);
+            s.rect(left, y + 166., col, 1., alpha(accent, 0.65));
+            s.bold().text(title, left + 12., y + 139., 22., accent);
             s.text(&desc, left + 12., y + 159., 13., MUTED);
         }
         if truck.is_some() {
@@ -243,22 +248,24 @@ impl Stash {
                 } else {
                     MUTED
                 };
+                if selected || s.over(left, row_y, col, 44.) {
+                    s.rect(
+                        left,
+                        row_y,
+                        col,
+                        44.,
+                        alpha(accent, if selected { 0.15 } else { 0.07 }),
+                    );
+                }
                 s.rect(
                     left,
-                    row_y,
+                    row_y + 43.,
                     col,
-                    44.,
-                    if selected {
-                        alpha(accent, 0.14)
-                    } else {
-                        alpha(INK, 0.83)
-                    },
+                    1.,
+                    alpha(accent, if selected { 0.8 } else { 0.16 }),
                 );
-                if selected || s.over(left, row_y, col, 44.) {
-                    s.border(left, row_y, col, 44., if selected { accent } else { EDGE });
-                }
                 if selected {
-                    s.rect(left, row_y, 3., 44., accent);
+                    s.rect(left, row_y + 8., 3., 28., accent);
                 }
                 material_symbol(s, i, left + 24., row_y + 21., color);
                 s.text(label, left + 46., row_y + 27., 17., color);
@@ -315,7 +322,7 @@ impl Stash {
         let ground = pile.map_or(0, |v| count(v, "amount", 0));
         let foot = p["vehicleId"].is_null();
         s.line(action_x - 15., y + 115., action_x - 15., y + 473., 1., EDGE);
-        s.text(name, action_x, y + 140., 25., PAPER);
+        s.bold().text(name, action_x, y + 140., 25., PAPER);
         s.text("КОЛИЧЕСТВО", action_x, y + 169., 12., MUTED);
         if s.button(action_x, y + 180., 38., 35., "−", false) {
             self.quantity = (self.quantity - 1).max(1);
