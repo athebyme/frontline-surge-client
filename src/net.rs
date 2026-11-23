@@ -57,6 +57,7 @@ pub struct Client {
     wire: Wire,
     pub id: Option<u32>,
     pub developer: bool,
+    pub vehicle_service: bool,
     last: Instant,
     last_out: Instant,
     map: MapState,
@@ -71,6 +72,7 @@ impl Client {
             wire,
             id: None,
             developer: false,
+            vehicle_service: false,
             last: Instant::now(),
             last_out: Instant::now(),
             map: MapState::default(),
@@ -103,6 +105,7 @@ impl Client {
                         return Err("Сервер прислал некорректное приветствие.".into());
                     }
                     self.developer = data["developer"].as_bool().unwrap_or(false);
+                    self.vehicle_service = data["vehicleService"].as_bool().unwrap_or(false);
                     let mut state = data["state"].take();
                     self.map.accept(&mut state)?;
                     latest = Some(state);
@@ -196,6 +199,7 @@ mod tests {
         assert_eq!(state["builtProps"][0]["buildId"], 55);
         assert_eq!(state["propChanges"][0]["stock"], 0);
         assert!(client.developer);
+        assert!(!client.vehicle_service);
         assert_eq!(state["groundDrops"][0]["id"], 33);
         for packet in [
             json!({"type":"world","round":2,"builtProps":[],"propChanges":[],"groundDrops":[]}),

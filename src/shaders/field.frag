@@ -61,11 +61,27 @@ void main(){
   }
   if(tile==19.){
     float worn=noise2(world.xz*.9+world.yy*.57)*.72+noise2(uv*3.)*.28;
-    if(worn>.806){tile=5.;pigment=mix(pigment,vec3(.60,.44,.35),smoothstep(.80,.875,worn));}else tile=6.;
+    // Rain and rising damp expose the brick first along the foot of the facade.
+    float damp=(1.-smoothstep(.65,1.9,local.y))*(.50+.50*worn);
+    float chip=worn+.10*damp;
+    pigment*=mix(vec3(1.),vec3(.68,.71,.66),damp);
+    if(chip>.735){
+      tile=5.;
+      pigment=mix(vec3(.75,.69,.57),vec3(.64,.44,.33),smoothstep(.735,.77,chip));
+    }else{
+      tile=6.;
+      pigment*=1.+.10*smoothstep(.69,.735,chip);
+    }
   }else if(tile==20.){
     tile=6.;pigment*=world.y<.84?vec3(.65,.69,.63):vec3(1.);
   }else if(tile==21.){
     tile=9.;pigment*=(.84+.16*abs(cos(uv.x*12.)));
+  }else if(tile==24.){
+    tile=4.;
+    float slat=fract(local.y/.115);
+    float profile=mix(.60,1.09,smoothstep(.04,.36,slat))-.12*smoothstep(.81,1.,slat);
+    float near=1.-smoothstep(12.,30.,distance(world,Eye));
+    pigment*=mix(1.,profile,near*(1.-abs(n.y)));
   }
   vec2 cell=vec2(mod(tile,8.),floor(tile/8.));
   vec3 detail=texture2D(Atlas,(cell+.015625+.96875*fract(uv))/vec2(8.,4.)).rgb;

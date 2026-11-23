@@ -54,9 +54,9 @@ def main():
         articles.append(f'<article id="{slug}">{html}</article>')
     document = ('<!doctype html><html lang="ru"><meta charset="utf-8">'
                 '<meta name="viewport" content="width=device-width,initial-scale=1">'
-                '<title>Линия фронта · портал разработки 0.5</title>'
+                '<title>Линия фронта · портал разработки 0.5.1</title>'
                 f'<style>{STYLE}</style><nav aria-label="Страницы проекта"><strong>Линия фронта</strong>'
-                f'<small>Документация · v0.5</small>{navigation}</nav><main>{"".join(articles)}</main></html>')
+                f'<small>Документация · v0.5.1</small>{navigation}</nav><main>{"".join(articles)}</main></html>')
     (ROOT / "docs/index.html").write_text(document, encoding="utf8")
 
 if __name__ == "__main__":

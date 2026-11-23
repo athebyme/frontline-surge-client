@@ -291,6 +291,9 @@ impl Play {
                 } else {
                     self.fire_tap = true;
                     self.edges["place"] = json!(true);
+                    if let Some(support) = self.local["preview"].get("supportBuildId") {
+                        self.edges["supportBuildId"] = support.clone();
+                    }
                 }
             }
         }
@@ -550,7 +553,7 @@ async fn main() {
             .local
             .get("preview")
             .filter(|p| p.is_object() && play.local["alive"] == true);
-        field.draw(snapshot, ghost, cam.position);
+        field.draw(snapshot, cam.position);
         if snapshot.is_some() {
             people.set_daylight(field.daylight());
             if spectator.is_some() {
@@ -566,6 +569,9 @@ async fn main() {
             }
             drone_view::draw_pulses(&play.state);
             drone_view::draw(&play.state, &play.local, cam.position);
+            if let Some(p) = ghost {
+                field.draw_build_preview(p);
+            }
             if let Some(id) = play.client.as_ref().and_then(|c| c.id) {
                 audio.update(&play.state, id);
             }
@@ -596,6 +602,7 @@ async fn main() {
                 &play.state,
                 &play.local,
                 operator,
+                play.client.as_ref().is_some_and(|c| c.vehicle_service),
                 spectator.is_some(),
                 screen.fps_visible(),
             ) {
@@ -649,6 +656,7 @@ async fn main() {
                 &font,
                 &play.status,
                 &play.endpoint,
+                &cam,
             )
         };
         match action {

@@ -75,6 +75,13 @@ struct SceneUniforms {
 }
 
 #[repr(C)]
+struct PreviewUniforms {
+    vp: [f32; 16],
+    model: [f32; 16],
+    tint: [f32; 4],
+}
+
+#[repr(C)]
 struct SkyUniforms {
     inverse: [f32; 16],
     time: f32,
@@ -110,6 +117,7 @@ pub struct World {
     round: Option<u64>,
     scene_pipeline: mq::Pipeline,
     depth_pipeline: mq::Pipeline,
+    preview_pipeline: mq::Pipeline,
     sky_pipeline: mq::Pipeline,
     sky_bindings: mq::Bindings,
     atlas: Texture2D,
@@ -186,6 +194,17 @@ impl World {
             &[("Light", Matrix), ("Model", Matrix)],
             &[],
         );
+        let preview_shader = shader(
+            gpu,
+            include_str!("shaders/build_preview.vert"),
+            include_str!("shaders/build_preview.frag"),
+            &[
+                ("ViewProjection", Matrix),
+                ("Model", Matrix),
+                ("Tint", Float4),
+            ],
+            &[],
+        );
         let sky_shader = shader(
             gpu,
             include_str!("shaders/sky.vert"),
@@ -219,6 +238,22 @@ impl World {
             &attributes,
             scene_shader,
             params,
+        );
+        let preview_pipeline = gpu.new_pipeline(
+            std::slice::from_ref(&layout),
+            &attributes[..2],
+            preview_shader,
+            mq::PipelineParams {
+                // Miniquad's OpenGL backend enables depth testing with depth_write.
+                // The preview is submitted after all opaque world geometry.
+                cull_face: mq::CullFace::Back,
+                color_blend: Some(mq::BlendState::new(
+                    mq::Equation::Add,
+                    mq::BlendFactor::Value(mq::BlendValue::SourceAlpha),
+                    mq::BlendFactor::OneMinusValue(mq::BlendValue::SourceAlpha),
+                )),
+                ..params
+            },
         );
         let depth_pipeline = gpu.new_pipeline(&[layout], &attributes[..1], depth_shader, params);
         let sky_pipeline = gpu.new_pipeline(
@@ -333,6 +368,12 @@ impl World {
             });
         }
         assert_eq!(reader.at, art.len(), "Extra bytes in province mesh pack");
+        let first = pages.len();
+        pages.extend(fracture_mesh::barricade_template(
+            template_size("barricade"),
+            gpu,
+        ));
+        templates.insert("barricade".into(), (first..pages.len()).collect());
         let sky = SkyState::at(0.);
         let lighting = light_camera(Vec3::ZERO, sky.key_light());
         let level: Value =
@@ -379,6 +420,7 @@ impl World {
             last_shadow_at: -1.,
             scene_pipeline,
             depth_pipeline,
+            preview_pipeline,
             sky_pipeline,
             sky_bindings,
             atlas,
@@ -444,29 +486,8 @@ impl World {
                     let Some(indices) = self.templates.get(key) else {
                         continue;
                     };
-                    let reference = match kind {
-                        "sandbag" => vec3(3.15, 1.02, 0.82),
-                        "logs" => vec3(2., 0.8, 1.05),
-                        "wall" => vec3(3.2, 1.2, 0.8),
-                        "refinery" => vec3(3.4, 3.0, 3.1),
-                        "garage" => vec3(4.4, 2.8, 4.2),
-                        "workshop" => vec3(3.0, 2.4, 2.2),
-                        _ => Vec3::ONE,
-                    };
-                    let scale = if kind == "wreck" {
-                        Vec3::ONE
-                    } else {
-                        vec3(
-                            number(p, "w", reference.x),
-                            number(p, "h", reference.y),
-                            number(p, "d", reference.z),
-                        ) / reference
-                    };
-                    let transform = Mat4::from_scale_rotation_translation(
-                        scale,
-                        Quat::from_rotation_y(-number(p, "yaw", 0.)),
-                        vec3(number(p, "x", 0.), 0., number(p, "z", 0.)),
-                    );
+                    let reference = template_size(kind);
+                    let transform = template_model(p, kind, reference);
                     for &page in indices {
                         next_dynamic.push(Placement { page, transform });
                     }
@@ -743,7 +764,7 @@ impl World {
 
     /// Draw while a Macroquad 3D camera is active. The following actor/weapon renderer
     /// can use normal Macroquad drawing calls; this pass shares its existing depth buffer.
-    pub fn draw(&mut self, state: Option<&Value>, build_preview: Option<&Value>, camera_pos: Vec3) {
+    pub fn draw(&mut self, state: Option<&Value>, camera_pos: Vec3) {
         let elapsed = state.map_or(0., |s| number(s, "elapsed", 0.));
         self.sky = SkyState::at(elapsed);
         self.sync(state, camera_pos);
@@ -800,9 +821,39 @@ impl World {
             gpu.end_render_pass();
         }
         moving::draw_shells(state, camera_pos);
-        if let Some(p) = build_preview.filter(|p| p.get("x").is_some()) {
-            draw_footprint(p);
+    }
+
+    pub fn draw_build_preview(&self, p: &Value) {
+        let Some(kind) = p["kind"].as_str() else {
+            return;
+        };
+        let Some(indices) = self.templates.get(kind) else {
+            return;
+        };
+        let transform = template_model(p, kind, template_size(kind));
+        let tint = if p["valid"].as_bool().unwrap_or(false) {
+            [0.42, 0.96, 0.69, 0.39]
+        } else {
+            [1.0, 0.39, 0.25, 0.43]
+        };
+        let mut gl = unsafe { get_internal_gl() };
+        gl.flush();
+        let vp = gl.quad_gl.get_projection_matrix();
+        let target = gl.quad_gl.get_active_render_pass();
+        let gpu = gl.quad_context;
+        gpu.begin_pass(target, mq::PassAction::Nothing);
+        gpu.apply_pipeline(&self.preview_pipeline);
+        gpu.apply_uniforms(mq::UniformsSource::table(&PreviewUniforms {
+            vp: vp.to_cols_array(),
+            model: transform.to_cols_array(),
+            tint,
+        }));
+        for &i in indices {
+            let page = &self.pages[i];
+            gpu.apply_bindings_from_slice(&[page.vertices], page.indices, &[]);
+            gpu.draw(0, page.count, 1);
         }
+        gpu.end_render_pass();
     }
 }
 
@@ -884,29 +935,59 @@ fn in_frustum(planes: &[Vec4; 6], low: Vec3, high: Vec3) -> bool {
         p.x * x + p.y * y + p.z * z + p.w >= -0.06
     })
 }
-fn draw_footprint(p: &Value) {
-    let center = vec3(number(p, "x", 0.), 0.035, number(p, "z", 0.));
-    let rot = Quat::from_rotation_y(-number(p, "yaw", 0.));
-    let width = number(p, "w", 3.15) * 0.5;
-    let height = number(p, "h", 1.02);
-    let depth = number(p, "d", 0.82) * 0.5;
-    let color = if p["valid"].as_bool().unwrap_or(false) {
-        Color::from_rgba(147, 235, 184, 255)
-    } else {
-        Color::from_rgba(246, 119, 86, 255)
-    };
-    let at = |x: f32, y: f32, z: f32| center + rot * vec3(x, y, z);
-    for x in [-width, width] {
-        for z in [-depth, depth] {
-            draw_line_3d(at(x, 0., z), at(x, height, z), color);
-        }
+fn template_size(kind: &str) -> Vec3 {
+    match kind {
+        "sandbag" => vec3(3.15, 1.02, 0.82),
+        "logs" => vec3(2., 0.8, 1.05),
+        "wall" => vec3(3.2, 1.2, 0.8),
+        "barricade" => vec3(3.1, 1.33, 0.6),
+        "refinery" => vec3(3.4, 3.0, 3.1),
+        "garage" => vec3(4.4, 2.8, 4.2),
+        "workshop" => vec3(3.0, 2.4, 2.2),
+        _ => Vec3::ONE,
     }
-    for y in [0., height] {
-        for x in [-width, width] {
-            draw_line_3d(at(x, y, -depth), at(x, y, depth), color);
-        }
-        for z in [-depth, depth] {
-            draw_line_3d(at(-width, y, z), at(width, y, z), color);
-        }
+}
+
+fn prop_model(p: &Value, scale: Vec3) -> Mat4 {
+    Mat4::from_scale_rotation_translation(
+        scale,
+        Quat::from_rotation_y(-number(p, "yaw", 0.)),
+        vec3(
+            number(p, "x", 0.),
+            number(p, "y", 0.),
+            number(p, "z", 0.),
+        ),
+    )
+}
+
+fn template_model(p: &Value, kind: &str, reference: Vec3) -> Mat4 {
+    let scale = if kind == "wreck" {
+        Vec3::ONE
+    } else {
+        vec3(
+            number(p, "w", reference.x),
+            number(p, "h", reference.y),
+            number(p, "d", reference.z),
+        ) / reference
+    };
+    prop_model(p, scale)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn construction_preview_follows_support_and_server_dimensions() {
+        let p = serde_json::json!({
+            "kind": "barricade", "x": 3., "z": -4., "y": 1.33,
+            "yaw": std::f32::consts::FRAC_PI_2, "w": 3.1, "h": 1.33, "d": 0.6,
+        });
+        let size = template_size("barricade");
+        let model = template_model(&p, "barricade", size);
+        let upper_edge = model.transform_point3(vec3(size.x / 2., size.y, 0.));
+        assert!((upper_edge - vec3(3., 2.66, -4. + 1.55)).length() < 0.0001);
+        let ground = serde_json::json!({"kind": "barricade", "h": 2.66});
+        assert_eq!(prop_model(&ground, Vec3::ONE).transform_point3(Vec3::ZERO), Vec3::ZERO);
     }
 }

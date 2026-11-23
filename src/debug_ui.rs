@@ -106,20 +106,21 @@ impl DebugUi {
         state: &Value,
         player: &Value,
         admin: bool,
+        vehicle_service: bool,
         flight: bool,
         fps: bool,
     ) -> DebugAction {
         let (w, h) = (screen_width(), screen_height());
-        let k = ((w - 20.) / 660.).min((h - 20.) / 448.).clamp(0.38, 1.35);
+        let k = ((w - 20.) / 660.).min((h - 20.) / 514.).clamp(0.38, 1.35);
         draw_rectangle(0., 0., w, h, Color::new(0.025, 0.037, 0.035, 0.72));
         let c = Canvas {
             x: (w - 660. * k) * 0.5,
-            y: (h - 448. * k) * 0.5,
+            y: (h - 514. * k) * 0.5,
             k,
             font,
         };
-        c.plate(0., 0., 660., 448., INK);
-        c.plate(0., 0., 4., 448., ACCENT);
+        c.plate(0., 0., 660., 514., INK);
+        c.plate(0., 0., 4., 514., ACCENT);
         c.text("Отладка матча", 24., 42., 33., LIGHT);
         if c.button(561., 16., 77., "F2  ×", false, true) {
             return DebugAction::Close;
@@ -233,6 +234,33 @@ impl DebugUi {
         ) {
             return DebugAction::Command(json!({"op":"refill"}));
         }
+        let help = if !admin {
+            Some("Только для локального разработчика")
+        } else if !vehicle_service {
+            Some("Нужен сервер с поддержкой F2-сервиса")
+        } else if !alive {
+            Some("Доступно после возрождения")
+        } else if crate::ui::friendly_vehicle(state, player).is_none() {
+            Some("Подойди к союзной машине")
+        } else {
+            None
+        };
+        if c.button(
+            24.,
+            412.,
+            292.,
+            "Ремонт · топливо · боезапас",
+            false,
+            help.is_none(),
+        ) {
+            return DebugAction::Command(json!({"op":"vehicleService"}));
+        }
+        let feedback = player["message"]
+            .as_str()
+            .filter(|_| player["messageT"].as_f64().unwrap_or(0.) > 0.);
+        if let Some(text) = feedback.or(help) {
+            c.text(text, 24., 471., 16., LIGHT);
+        }
         c.text(
             if admin {
                 "Esc закрывает панель. Камера оставляет бойца в матче."
@@ -240,7 +268,7 @@ impl DebugUi {
                 "Хост включает команды при запуске сервера с --dev-local."
             },
             24.,
-            427.,
+            495.,
             15.,
             MUTE,
         );

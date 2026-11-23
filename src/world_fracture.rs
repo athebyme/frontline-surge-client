@@ -1,7 +1,7 @@
 //! Per-building surfaces from the *same* layout as the authoritative simulation.
 //! Each quad remembers its cell and its neighbor. Removing a cell both makes a hole
 //! and exposes the cut faces behind it. Only that building's index buffers change.
-use super::{dead, in_frustum, mq, number, Page, PageKind, LOD_SWITCH_METERS};
+use super::{dead, in_frustum, mq, number, prop_model, Page, PageKind, LOD_SWITCH_METERS};
 use frontline_surge::fracture::{Cell, Layout, Material};
 use macroquad::prelude::*;
 use serde_json::Value;
@@ -236,6 +236,11 @@ impl Building {
                 _ => [185, 163, 139, 19],
             }
         };
+        let shutter = match variant % 3 {
+            0 => [91, 115, 94, 24],
+            1 => [95, 112, 123, 24],
+            _ => [131, 96, 77, 24],
+        };
         for (id, c) in cells.iter().enumerate() {
             if writer.vertices.len() > VERTEX_LIMIT - 800 {
                 parts.push(writer.upload(gpu));
@@ -330,6 +335,18 @@ impl Building {
                             id,
                         );
                     }
+                    let underside = local.y - block.y * 0.5;
+                    if cottage && adjacent[3] == NONE && (1.6..=3.6).contains(&underside)
+                        && matches!(c.material, Material::Brick | Material::Wood)
+                    {
+                        // Each lintel segment sits within the solid cell above the original opening.
+                        writer.cuboid(
+                            local + lip - Vec3::Y * (block.y * 0.5 - 0.075),
+                            dim(span - 0.012, 0.15, 0.13),
+                            [163, 155, 132, 7],
+                            id,
+                        );
+                    }
                     let sides = if along_x { [1, 0] } else { [5, 4] };
                     for (which, other) in sides.into_iter().enumerate() {
                         if adjacent[other] != NONE || local.y < 0.24 || local.y > 3.2 {
@@ -340,14 +357,18 @@ impl Building {
                         // Narrow shutters and oak door cheeks are mounted on solid wall cells.
                         let width = if cottage { 0.22 } else { 0.096 };
                         let edge = tang * (side * (span * 0.5 - width * 0.57));
+                        // A real window has masonry below the opening. Door jambs stay plain timber.
+                        let dir = AXIS[other];
+                        let below_opening = [ix[0] + 2 * dir[0], 1, ix[2] + 2 * dir[2]];
+                        let style = if cottage && map.contains_key(&below_opening) {
+                            shutter
+                        } else {
+                            [97, 71, 47, 3]
+                        };
                         writer.cuboid(
                             local + lip + edge,
                             dim(width, block.y * 0.98, 0.055),
-                            if cottage {
-                                [89, 112, 93, 4]
-                            } else {
-                                [97, 71, 47, 3]
-                            },
+                            style,
                             id,
                         );
                     }
@@ -383,10 +404,7 @@ impl Building {
         for part in &mut parts {
             update_part(part, &broken, gpu);
         }
-        let model = Mat4::from_rotation_translation(
-            Quat::from_rotation_y(-number(p, "yaw", 0.)),
-            vec3(number(p, "x", 0.), 0., number(p, "z", 0.)),
-        );
+        let model = prop_model(p, Vec3::ONE);
         let (low, high) = world_bounds(model, size);
         Some(Self {
             parts,
@@ -433,6 +451,16 @@ impl Building {
         }
     }
 }
+pub(super) fn barricade_template(size: Vec3, gpu: &mut dyn mq::RenderingBackend) -> Vec<Page> {
+    let p = serde_json::json!({"kind":"barricade","w":size.x,"h":size.y,"d":size.z});
+    Building::new(&p, gpu, false)
+        .expect("valid construction template")
+        .parts
+        .into_iter()
+        .map(|part| part.page)
+        .collect()
+}
+
 fn random(mut x: u32) -> f32 {
     x ^= x >> 16;
     x = x.wrapping_mul(0x45d9f3b);

@@ -100,14 +100,14 @@ fn by_facility<'a>(p: &Value, state: &'a Value, kind: &str, reach: f64) -> Optio
             ))
         })
 }
-fn car<'a>(state: &'a Value, p: &Value) -> Option<&'a Value> {
+pub(crate) fn friendly_vehicle<'a>(state: &'a Value, p: &Value) -> Option<&'a Value> {
     let team = string(p, "team", "blue");
     let cars = state["vehicles"].as_array()?;
     let current = &p["vehicleId"];
     if !current.is_null() {
-        return cars
-            .iter()
-            .find(|v| v["id"] == *current && !flag(v, "destroyed", false));
+        return cars.iter().find(|v| {
+            v["id"] == *current && string(v, "team", "") == team && !flag(v, "destroyed", false)
+        });
     }
     cars.iter()
         .filter(|v| string(v, "team", "") == team && !flag(v, "destroyed", false))
@@ -134,7 +134,7 @@ fn refinery_remaining(f: &Value) -> f64 {
 fn catalogue(tab: usize, state: &Value, p: &Value) -> Vec<Recipe> {
     let carried = count(p, "fuel", 0);
     let seated = !p["vehicleId"].is_null();
-    let vehicle = car(state, p);
+    let vehicle = friendly_vehicle(state, p);
     let workshop = by_facility(p, state, "workshop", if seated { 8. } else { 3. }).is_some();
     let motor_workshop = by_facility(p, state, "workshop", 8.).is_some();
     let tank = seated && vehicle.is_some_and(|v| string(v, "kind", "") == "mbt");

@@ -7,6 +7,7 @@ use tactical_map::TacticalMap;
 #[path = "crafting.rs"]
 mod crafting;
 use crafting::CraftMenu;
+pub(crate) use crafting::friendly_vehicle;
 #[path = "stash_ui.rs"]
 mod stash_ui;
 use stash_ui::Stash;
@@ -84,6 +85,22 @@ fn string<'a>(v: &'a Value, key: &str, default: &'a str) -> &'a str {
 fn flag(v: &Value, key: &str, default: bool) -> bool {
     v.get(key).and_then(Value::as_bool).unwrap_or(default)
 }
+// A direction has w = 0. Camera translation must not invent a target distance.
+fn sight_position(matrix: Mat4, yaw: f32, pitch: f32, viewport: Vec2) -> Option<Vec2> {
+    let clip = matrix * crate::dir(yaw, pitch).extend(0.);
+    if !clip.is_finite() || clip.w <= 0. || clip.x.abs() > clip.w || clip.y.abs() > clip.w {
+        return None;
+    }
+    let ndc = vec2(clip.x, -clip.y) / clip.w;
+    Some((ndc + Vec2::ONE) * 0.5 * viewport)
+}
+
+fn heading_label(v: &Value, key: &str) -> String {
+    v[key].as_f64().map_or_else(|| "—".into(), |yaw| {
+        format!("{:03}°", (yaw.to_degrees().round() as i32).rem_euclid(360))
+    })
+}
+
 fn count(v: &Value, key: &str, fallback: i32) -> i32 {
     number(v, key, fallback as f64).ceil() as i32
 }
@@ -1018,7 +1035,42 @@ impl Ui {
             },
         );
     }
-    fn hud(&mut self, s: &Surface, state: &Value, p: &Value) {
+    fn vehicle_sight(s: &Surface, camera: &Camera3D, v: &Value, p: &Value) {
+        let (Some(yaw), Some(pitch)) = (v["turretYaw"].as_f64(), p["pitch"].as_f64()) else {
+            return;
+        };
+        let cannon = v["kind"] == "mbt" && !is_mouse_button_down(MouseButton::Right);
+        let limit = if cannon { 0.6 } else { 0.7 };
+        let Some(at) = sight_position(
+            camera.matrix(),
+            yaw as f32,
+            (pitch as f32).clamp(-limit, limit),
+            vec2(s.w, s.h),
+        ) else {
+            return;
+        };
+        let color = if number(p, "hitConfirm", 0.) > 0. {
+            GOLD
+        } else {
+            PAPER
+        };
+        for (stroke, ink) in [(3.6, INK), (1.6, color)] {
+            for sign in [-1., 1.] {
+                s.line(at.x + sign * 10., at.y, at.x + sign * 24., at.y, stroke, ink);
+                if cannon {
+                    s.line(at.x, at.y, at.x + sign * 6., at.y + 7., stroke, ink);
+                } else {
+                    s.line(at.x, at.y + sign * 5., at.x, at.y + sign * 12., stroke, ink);
+                }
+            }
+            if !cannon {
+                draw_circle_lines(
+                    at.x * s.scale, at.y * s.scale, 8. * s.scale, stroke * s.scale, ink,
+                );
+            }
+        }
+    }
+    fn hud(&mut self, s: &Surface, state: &Value, p: &Value, camera: &Camera3D) {
         if let Some(d) = own_drone(state, p) {
             Self::drone_hud(s, state, p, d, self.drone_zoom);
             if self.scoreboard {
@@ -1118,8 +1170,14 @@ impl Ui {
         };
         s.text(&shortcut, 26., 115., 11., PAPER);
         Self::compass(s, number(p, "yaw", 0.));
-        let vehicle_gun = vehicle.is_some_and(|v| matches!(string(v, "kind", ""), "mbt" | "apc"));
-        if alive && !building && (vehicle.is_none() || vehicle_gun) {
+        let armed = vehicle.filter(|v| matches!(string(v, "kind", ""), "mbt" | "apc"));
+        let vehicle_gun = armed.is_some();
+        if alive && !building {
+            if let Some(v) = armed {
+                Self::vehicle_sight(s, camera, v, p);
+            }
+        }
+        if alive && !building && vehicle.is_none() {
             if number(p, "hitConfirm", 0.) > 0. {
                 for (dx, dy) in [(-1., -1.), (1., -1.), (-1., 1.), (1., 1.)] {
                     s.line(
@@ -1156,7 +1214,7 @@ impl Ui {
             }
         }
         let y = s.h - 100.;
-        s.rect(23., y, 385., 76., PLATE);
+        s.rect(23., y, if vehicle.is_some() { 246. } else { 385. }, 76., PLATE);
         let hp = count(p, "hp", 100).max(0);
         s.text("ЗДОРОВЬЕ", 34., y + 15., 10., MUTED);
         s.text(
@@ -1174,13 +1232,23 @@ impl Ui {
             s.rect(34., by, 62. * f.clamp(0., 1.), h, color);
         }
         s.line(109., y + 10., 109., y + 66., 1., EDGE);
-        for (i, (key, label)) in MATERIALS.iter().enumerate() {
-            let xx = 120. + i as f32 * 56.;
-            s.text(label, xx, y + 22., 10., MUTED);
-            s.text(&count(p, key, 0).to_string(), xx, y + 46., 19., PAPER);
+        if let Some(v) = vehicle {
+            for (col, label, key) in [(0., "КОРПУС", "yaw"), (73., "БАШНЯ", "turretYaw")] {
+                if col == 0. || vehicle_gun {
+                    s.text(label, 120. + col, y + 22., 10., MUTED);
+                    s.text(&heading_label(v, key), 120. + col, y + 45., 18., PAPER);
+                }
+            }
+            s.text("I   Рюкзак", 120., y + 65., 11., MUTED);
+        } else {
+            for (i, (key, label)) in MATERIALS.iter().enumerate() {
+                let xx = 120. + i as f32 * 56.;
+                s.text(label, xx, y + 22., 10., MUTED);
+                s.text(&count(p, key, 0).to_string(), xx, y + 46., 19., PAPER);
+            }
+            s.text("K  Крафт   ·   B  Стройка", 120., y + 65., 11., GOLD);
+            s.right("I   Рюкзак", 395., y + 65., 11., MUTED);
         }
-        s.text("K  Крафт   ·   B  Стройка", 120., y + 65., 11., GOLD);
-        s.right("I   Рюкзак", 395., y + 65., 11., MUTED);
         if let Some(v) = vehicle {
             let w = 320.;
             let x = s.w - w - 24.;
@@ -1372,7 +1440,11 @@ impl Ui {
                 plan_name(k),
                 plan_cost(k),
                 if flag(&p["preview"], "valid", false) {
-                    "ЛКМ  Поставить"
+                    if p["preview"]["level"] == 2 {
+                        "ЛКМ  Второй ярус"
+                    } else {
+                        "ЛКМ  Поставить"
+                    }
                 } else {
                     "Нет места или ресурсов"
                 }
@@ -1576,8 +1648,9 @@ impl Ui {
         font: &Font,
         status: &str,
         endpoint: &str,
+        camera: &Camera3D,
     ) -> Action {
-        let action = self.draw_scene(mode, state, local, font, status, endpoint);
+        let action = self.draw_scene(mode, state, local, font, status, endpoint, camera);
         if is_key_pressed(KeyCode::F3) {
             self.fps_visible = !self.fps_visible;
         }
@@ -1618,6 +1691,7 @@ impl Ui {
         font: &Font,
         status: &str,
         endpoint: &str,
+        camera: &Camera3D,
     ) -> Action {
         set_default_camera();
         let s = Surface::new(font);
@@ -1674,7 +1748,7 @@ impl Ui {
                         self.map_open = false;
                     }
                 } else {
-                    self.hud(&s, state, local);
+                    self.hud(&s, state, local, camera);
                 }
                 Action::None
             }
@@ -1765,6 +1839,23 @@ impl Ui {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn turret_marker_tracks_view_rotation_and_rejects_offscreen_directions() {
+        let viewport = vec2(1280., 720.);
+        let perspective = Mat4::perspective_rh_gl(1.2, 16. / 9., 0.1, 1000.);
+        let eye = vec3(50., 3., -12.);
+        let yaw = 0.9;
+        let pitch = 0.2;
+        let view = Mat4::look_at_rh(eye, eye + crate::dir(yaw, pitch), Vec3::Y);
+        let matrix = perspective * view;
+        let marker = |y, p| sight_position(matrix, y, p, viewport);
+        assert!(marker(yaw, pitch).unwrap().distance(viewport * 0.5) < 0.01);
+        assert!(marker(yaw + 0.15, pitch).unwrap().x > viewport.x * 0.5);
+        assert!(marker(yaw, pitch + 0.1).unwrap().y < viewport.y * 0.5);
+        assert!(marker(yaw + 1.4, 0.).is_none());
+        assert!(marker(yaw + std::f32::consts::PI, 0.).is_none());
+    }
+
     #[test]
     fn invitations_parse_ipv4_dns_ipv6_and_custom_ports() {
         for (input, host, port) in [
