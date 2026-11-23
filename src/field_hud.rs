@@ -556,7 +556,7 @@ pub(super) fn vehicle(s: &Surface, v: &Value) {
             };
             let cycle = if kind == "apc" { frontline_surge::vehicle_gun::APC_RELOAD }
                 else { frontline_surge::vehicle_gun::TANK_RELOAD };
-            let remaining = number(v, "gunRemaining", 0.);
+            let remaining = number(v, "gunRemaining", 0.) as f32;
             if remaining > 0. {
                 strip(s, hx + 24., row + 5., 54., (1. - remaining / cycle).clamp(0., 1.), 6, AMBER);
             }

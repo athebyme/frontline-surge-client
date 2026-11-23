@@ -514,6 +514,8 @@ fn render_audio_preview() {
                     priority: 3,
                     distance: 0.,
                     offset: 0.,
+                    armored: false,
+                    arrival_delay: 0.,
                 });
             }
         }
