@@ -1,17 +1,19 @@
 'use strict';
 // Offline primitive/terrain authoring. Units are meters, Y is up.
   const patterns = ['flat', 'grass', 'dirt', 'wood', 'plank', 'brick', 'plaster', 'stone',
-    'roof', 'metal', 'cloth', 'sandbag', 'bark', 'leaves', 'gravel', 'crop', 'glass', 'light'];
+    'roof', 'metal', 'cloth', 'sandbag', 'bark', 'leaves', 'gravel', 'crop', 'glass', 'light',
+    'land-cover', 'worn-plaster', 'interior-plaster', 'corrugated', 'slate-camo', 'dune-camo',
+    'shutter', 'fissure-a', 'asphalt', 'corrugated-paint', 'concrete', 'fissure-b'];
   const groundColors = {
-    meadow: ['#828d60','grass'], grass: ['#82905d','grass'], earth: ['#897758','dirt'],
-    dirt: ['#ad9974','dirt'], orchard: ['#818751','grass'], crop: ['#b3a264','crop'],
+    meadow: ['#81945d','grass'], grass: ['#778e55','grass'], earth: ['#897758','dirt'],
+    dirt: ['#ad9974','dirt'], orchard: ['#818751','grass'], crop: ['#c1a459','crop'],
     gravel: ['#a2977d','gravel'], road: ['#b5a183','dirt'], verge: ['#8b8e67','grass'],
     rut: ['#a08a6b','gravel'], stone: ['#8c8775','stone'], bark: ['#615744','bark'],
     wood: ['#92744f','wood'], plaster: ['#b6aa91','plaster'], leaves: ['#68714a','leaves'],
     metal: ['#50554f','metal'], brick: ['#9c735d','brick'], roof: ['#7d6355','roof'],
     cloth: ['#777456','cloth'], sandbag: ['#a69a73','sandbag'], glass: ['#869697','glass'],
     dryGrass: ['#ab9662','grass'], darkGrass: ['#758050','grass'],
-    stubble: ['#a39a63','grass'], wildGrass: ['#788049','grass'],
+    stubble: ['#b0a063','grass'], wildGrass: ['#788049','grass'],
     distantTree: ['#59684e','leaves'], distantTrunk: ['#6e6853','bark']
   };
   function hash(x,y,k=0) {

@@ -1,6 +1,9 @@
 //! Native first-person arms, articulated infantry and short-lived match effects.
+#[path = "actor_pose.rs"]
+mod pose;
 use macroquad::camera::Camera;
 use macroquad::prelude::*;
+use pose::{arm_pose, ReloadPose};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::f32::consts::{PI, TAU};
@@ -54,9 +57,6 @@ fn smooth(x: f32) -> f32 {
     let t = x.clamp(0., 1.);
     t * t * (3. - 2. * t)
 }
-fn shortest_angle(from: f32, to: f32) -> f32 {
-    (to - from + PI).rem_euclid(TAU) - PI
-}
 
 struct Rig {
     parts: HashMap<String, Mesh>,
@@ -74,6 +74,7 @@ impl Rig {
     fn load() -> Self {
         let texture = Texture2D::from_file_with_format(CLOTH, Some(ImageFormat::Png));
         texture.set_filter(FilterMode::Linear);
+        let swatch = texture.width() / 4.;
         let mut in_file = Cursor::new(RIG);
         assert_eq!(&read_array::<4>(&mut in_file), b"FRA1");
         let count = u16::from_le_bytes(read_array(&mut in_file));
@@ -93,8 +94,8 @@ impl Rig {
                 let u = u16::from_le_bytes(read_array(&mut in_file)) as f32 / 65535.;
                 let v = u16::from_le_bytes(read_array(&mut in_file)) as f32 / 65535.;
                 let uv = vec2(
-                    (tile as f32 * 64. + 0.5 + 63. * u) / 256.,
-                    (0.5 + 63. * v) / 64.,
+                    (tile as f32 * swatch + 0.5 + (swatch - 1.) * u) / texture.width(),
+                    (0.5 + (texture.height() - 1.) * v) / texture.height(),
                 );
                 vertices.push(Vertex::new2(
                     vec3(x, y, z),
@@ -167,6 +168,7 @@ fn with_transform(transform: Mat4, f: impl FnOnce()) {
 struct Remote {
     location: Vec3,
     yaw: f32,
+    pitch: f32,
     phase: f32,
     movement: f32,
     hp: f32,
@@ -179,7 +181,8 @@ impl Remote {
         Self {
             location: pos(p),
             yaw: num(p, "yaw", 0.),
-            phase: 0.,
+            pitch: num(p, "pitch", 0.),
+            phase: (id_of(p) % 53) as f32 * 0.87,
             movement: 0.,
             hp: num(p, "hp", 100.),
             down: 0.,
@@ -187,27 +190,23 @@ impl Remote {
             hurt: 0.,
         }
     }
-    fn update(&mut self, p: &Value, dt: f32) {
-        let target = pos(p);
-        let yaw = num(p, "yaw", 0.);
+    fn update(&mut self, p: &Value, dt: f32, pose: crate::motion::Pose) {
+        let target = pose.position;
+        let yaw = pose.yaw;
         let hp = num(p, "hp", 100.);
         if hp < self.hp {
             self.hurt = 1.;
         }
-        if alive(p) && (self.hp <= 0. || self.location.distance_squared(target) > 16.) {
-            self.location = target;
-            self.yaw = yaw;
-            self.down = 0.;
-        }
         self.hp = hp;
         self.hurt = (self.hurt - dt * 4.5).max(0.);
+        self.location = target;
+        self.yaw = yaw;
+        self.pitch = pose.pitch;
         if !alive(p) {
             self.down = (self.down + dt * 1.25).min(1.);
             return;
         }
         self.down = 0.;
-        self.location = self.location.lerp(target, 1. - (-18. * dt).exp());
-        self.yaw += shortest_angle(self.yaw, yaw) * (1. - (-18. * dt).exp());
         self.phase += dt * if yes(p, "sprinting", false) { 11. } else { 8.1 };
         self.movement = step(
             self.movement,
@@ -281,7 +280,7 @@ impl Gun {
         };
         gun
     }
-    fn draw(&self, rig: &Rig, transform: Mat4, cycle: f32, reload_phase: f32) {
+    fn draw(&self, rig: &Rig, transform: Mat4, cycle: f32, pose: &ReloadPose) {
         rig.draw(self.body, transform);
         rig.draw(self.optic, transform);
         if let Some(grip) = self.grip {
@@ -293,82 +292,130 @@ impl Gun {
             self.slide,
             transform * translate(vec3(0., 0., cycling * cycle)),
         );
-        // The spent magazine clears the body, then a replacement rises into its seat.
-        let (drop, turn) = if reload_phase < 0.43 {
-            let t = smooth((reload_phase - 0.09) / 0.34);
-            (t, t * 0.28)
-        } else {
-            let t = 1. - smooth((reload_phase - 0.43) / 0.38);
-            (t, -0.38 * t)
-        };
-        let travel = match self.body {
-            "vx9" => 0.29,
-            "mr7" => 0.19,
-            _ => 0.22,
-        };
-        let feed = self.feed_position + vec3(-drop * 0.085, -travel * drop, -drop * 0.052);
-        rig.draw(
-            self.feed,
-            transform * translate(feed) * rz(turn) * rx(drop * 0.21),
-        );
+        let feed = self.feed_position + pose.feed_offset;
+        rig.draw(self.feed, transform * translate(feed) * rz(pose.feed_twist));
     }
 }
 fn seated(p: &Value) -> bool {
     p["vehicleId"].is_number()
 }
 
-fn draw_remote(rig: &Rig, r: &Remote, p: &Value, friend: bool) {
+fn reload_phase(p: &Value, snapshot_age: f32) -> f32 {
+    let remaining = num(p, "reload", 0.) - snapshot_age;
+    if remaining <= 0. {
+        0.
+    } else {
+        1. - (remaining / num(p, "reloadTime", 2.).max(0.01)).clamp(0., 1.)
+    }
+}
+
+fn draw_remote(rig: &Rig, r: &Remote, p: &Value, friend: bool, snapshot_age: f32) {
     if r.down >= 0.99 || seated(p) {
         return;
     }
-    let prefix = if friend { "a" } else { "e" };
-    let parts = if prefix == "a" {
-        ["a/torso", "a/arms", "a/mark", "a/hip", "a/shin"]
+    let parts = if friend {
+        [
+            "a/torso",
+            "a/head",
+            "a/l_upper",
+            "a/l_lower",
+            "a/r_upper",
+            "a/r_lower",
+            "a/mark",
+            "a/hip",
+            "a/shin",
+        ]
     } else {
-        ["e/torso", "e/arms", "e/mark", "e/hip", "e/shin"]
+        [
+            "e/torso",
+            "e/head",
+            "e/l_upper",
+            "e/l_lower",
+            "e/r_upper",
+            "e/r_lower",
+            "e/mark",
+            "e/hip",
+            "e/shin",
+        ]
     };
-    let swing = r.phase.sin() * r.movement;
+    let sway = r.phase.sin() * r.movement;
+    let step_height = (0.5 - 0.5 * (2. * r.phase).cos()) * r.movement;
     let fall = smooth(r.down / 0.77);
-    let body = translate(r.location + vec3(0., 0.031 * swing.abs() - 0.33 * fall, 0.))
+    let root = translate(r.location + vec3(0., 0.024 * step_height - 0.33 * fall, 0.))
         * ry(-r.yaw)
         * rz(r.down_sign * 1.36 * fall + r.hurt * 0.09)
-        * rx(0.24 * fall - 0.030 * r.movement);
-    rig.draw(parts[0], body);
-    let recoil = num(p, "recoil", 0.);
-    let pilot = p["droneId"].is_number();
-    let arms = body
-        * translate(vec3(0., 1.325, 0.))
-        * rx(if pilot {
-            -0.67
-        } else {
-            num(p, "pitch", 0.).clamp(-0.96, 0.96) + 0.085 * recoil
-        });
-    rig.draw(parts[1], arms);
+        * rx(0.24 * fall);
+    let torso = root
+        * translate(vec3(0.025 * sway, 0., 0.))
+        * translate(vec3(0., 0.91, 0.))
+        * ry(-0.065 * sway)
+        * rz(0.04 * sway)
+        * rx(-0.067 * r.movement)
+        * translate(vec3(0., -0.91, 0.));
+    rig.draw(parts[0], torso);
     let gun = Gun::equipped(p);
-    let held = arms
-        * translate(vec3(0.056, 0.005, -0.313))
-        * ry(0.315)
-        * Mat4::from_scale(Vec3::splat(0.76));
-    let reload = num(p, "reload", 0.);
-    let phase = if reload > 0. {
-        1. - (reload / num(p, "reloadTime", 2.).max(0.01)).clamp(0., 1.)
+    let reload = ReloadPose::sample(gun.body, reload_phase(p, snapshot_age));
+    let recoil = (num(p, "recoil", 0.) - 6.8 * snapshot_age).max(0.);
+    let pilot = p["droneId"].is_number();
+    let pitch = if pilot {
+        -0.67
     } else {
-        0.
+        r.pitch.clamp(-0.96, 0.96)
     };
-    gun.draw(rig, held, recoil, phase);
+    let neck = vec3(0., 1.484, 0.);
+    rig.draw(
+        parts[1],
+        torso
+            * translate(neck)
+            * ry(0.055 * sway)
+            * rx(pitch * 0.53 - reload.ready * 0.19)
+            * translate(-neck),
+    );
+    let arms = torso * translate(vec3(0., 1.325, 0.)) * rx(pitch + recoil * 0.07);
+    let bind =
+        translate(vec3(0.056, 0.005, -0.313)) * ry(0.315) * Mat4::from_scale(Vec3::splat(0.76));
+    let posed = translate(vec3(0., 0.012, 0.031) * recoil) * bind * reload.weapon(0.78);
+    let gun_delta = posed * bind.inverse();
+    for (left, wrist, upper, lower) in [
+        (true, vec3(-0.061, -0.047, -0.431), parts[2], parts[3]),
+        (false, vec3(0.090, -0.057, -0.246), parts[4], parts[5]),
+    ] {
+        let rest = gun_delta.transform_point3(wrist);
+        let target = if left {
+            let grasp =
+                posed.transform_point3(vec3(-0.048, -0.062, -0.349) + reload.support_offset);
+            rest.lerp(grasp, reload.grasp)
+        } else {
+            rest
+        };
+        let offset = target - wrist;
+        let (shoulder, elbow) = arm_pose(left, offset, 0.024 * reload.ready);
+        rig.draw(upper, arms * shoulder);
+        rig.draw(lower, arms * elbow);
+    }
+    gun.draw(rig, arms * posed, recoil.max(reload.cycle), &reload);
     if r.down == 0. {
-        rig.draw(parts[2], body * translate(vec3(0., 2.05, 0.)));
+        rig.draw(parts[6], root * translate(vec3(0., 2.05, 0.)));
         if recoil > 0.80 {
-            rig.draw("flash", held * translate(gun.muzzle));
+            rig.draw("flash", arms * posed * translate(gun.muzzle));
         }
     }
+    let stride = if yes(p, "sprinting", false) {
+        0.67
+    } else {
+        0.46
+    };
     for side in [-1., 1.] {
-        let motion = swing * side;
-        let hip = body * translate(vec3(side * 0.121, 0.92, 0.)) * rx(0.48 * motion);
-        rig.draw(parts[3], hip);
+        let motion = sway * side;
+        let recovery = (r.phase.cos() * side).max(0.) * r.movement;
+        let hip = root
+            * translate(vec3(side * 0.121 + 0.010 * sway, 0.92, 0.))
+            * rx(stride * motion + 0.08 * recovery);
+        rig.draw(parts[7], hip);
         rig.draw(
-            parts[4],
-            hip * translate(vec3(0., -0.421, 0.)) * rx(-(-0.45 * motion).max(0.)),
+            parts[8],
+            hip * translate(vec3(0., -0.421, 0.))
+                * rx(-0.68 * recovery * recovery - 0.04 * r.movement),
         );
     }
 }
@@ -468,6 +515,27 @@ fn draw_grenade_at(p: Vec3, age: f32, remaining: f32) {
     });
 }
 
+struct VehicleFlash {
+    vehicle: u64,
+    cannon: bool,
+    remaining: f32,
+}
+
+impl VehicleFlash {
+    fn transform(&self, v: &Value, state: &Value, motion: &crate::motion::Motion) -> Option<Mat4> {
+        let mount = crate::vehicle_camera::GunMount::for_vehicle(v["kind"].as_str()?)?;
+        let pose = motion.vehicle(v);
+        let turret = mount.turret(pose.position, pose.yaw, pose.turret);
+        let pitch = crate::vehicle_camera::gun_pitch(v, Some(state), motion);
+        let tip = if self.cannon {
+            vec3(0., 0., 2.31)
+        } else {
+            mount.mg_tip
+        };
+        Some(mount.barrel(turret, pitch) * translate(tip) * ry(PI))
+    }
+}
+
 struct Tracer {
     a: Vec3,
     b: Vec3,
@@ -519,6 +587,7 @@ pub struct Actors {
     tracers: Vec<Tracer>,
     chips: Vec<Chip>,
     bursts: Vec<Burst>,
+    vehicle_flashes: Vec<VehicleFlash>,
     smoke: Mesh,
     grenade_positions: HashMap<u64, Vec3>,
     throw_time: f32,
@@ -538,6 +607,7 @@ impl Actors {
             tracers: Vec::new(),
             chips: Vec::new(),
             bursts: Vec::with_capacity(8),
+            vehicle_flashes: Vec::with_capacity(4),
             smoke: smoke_disc(),
             grenade_positions: HashMap::new(),
             throw_time: 0.,
@@ -558,6 +628,7 @@ impl Actors {
         self.tracers.clear();
         self.chips.clear();
         self.bursts.clear();
+        self.vehicle_flashes.clear();
         self.grenade_positions.clear();
         self.throw_time = 0.;
         self.last_event = None;
@@ -567,7 +638,13 @@ impl Actors {
         self.movement = 0.;
         self.kick = 0.;
     }
-    pub fn draw_world(&mut self, state: &Value, local: &Value, dt: f32) {
+    pub fn draw_world(
+        &mut self,
+        state: &Value,
+        local: &Value,
+        dt: f32,
+        motion: &crate::motion::Motion,
+    ) {
         let dt = dt.clamp(0., 0.12);
         let round = state["round"].as_i64();
         if self.round.is_some() && round != self.round {
@@ -591,8 +668,8 @@ impl Actors {
                     .remote
                     .entry(id_of(p))
                     .or_insert_with(|| Remote::new(p));
-                r.update(p, dt);
-                draw_remote(&self.rig, r, p, p["team"] == local["team"]);
+                r.update(p, dt, motion.player(p));
+                draw_remote(&self.rig, r, p, p["team"] == local["team"], motion.age);
             }
         }
         if let Some(events) = state["events"].as_array() {
@@ -605,7 +682,7 @@ impl Actors {
                     continue;
                 }
                 self.last_event = Some(id);
-                self.event(event, uid);
+                self.event(event, uid, state, motion);
             }
         }
         if let Some(list) = state["grenades"].as_array() {
@@ -619,14 +696,54 @@ impl Actors {
                 draw_grenade_at(*location, num(g, "total", 1.8) - left, left);
             }
         }
+        self.vehicle_flashes.retain_mut(|flash| {
+            let Some(v) = state["vehicles"]
+                .as_array()
+                .and_then(|list| list.iter().find(|v| id_of(v) == flash.vehicle))
+            else {
+                return false;
+            };
+            if let Some(transform) = flash.transform(v, state, motion) {
+                let scale = if flash.cannon { 3.1 } else { 1.65 };
+                self.rig.draw(
+                    "flash",
+                    transform * rz(flash.remaining * 36.) * Mat4::from_scale(Vec3::splat(scale)),
+                );
+            }
+            flash.remaining -= dt;
+            flash.remaining > 0.
+        });
         self.draw_effects(dt);
         self.draw_bursts(pos(local) + Vec3::Y * 1.67, dt);
     }
-    fn event(&mut self, e: &Value, uid: u64) {
+    fn event(&mut self, e: &Value, uid: u64, state: &Value, motion: &crate::motion::Motion) {
+        let cannon = e["type"] == "tankFire";
+        let mounted_mg = e["type"] == "shot" && e["weapon"] == "vehicle_mg";
+        if cannon || mounted_mg {
+            if let Some(v) = state["vehicles"].as_array().and_then(|list| {
+                list.iter().find(|v| {
+                    let vehicle = e["vehicleId"].as_u64();
+                    vehicle.is_some_and(|id| id == id_of(v))
+                        || (e["actor"].is_number() && v["driver"] == e["actor"])
+                })
+            }) {
+                let flash = VehicleFlash {
+                    vehicle: id_of(v),
+                    cannon,
+                    remaining: if cannon { 0.092 } else { 0.058 },
+                };
+                if cannon {
+                    if let Some(muzzle) = flash.transform(v, state, motion) {
+                        self.add_burst(muzzle.transform_point3(Vec3::ZERO), 0.52);
+                    }
+                }
+                self.vehicle_flashes.push(flash);
+            }
+        }
         match e["type"].as_str().unwrap_or("") {
             "shot" => {
                 let mine = e["actor"].as_u64() == Some(uid);
-                if mine {
+                if mine && !mounted_mg {
                     self.kick = 1.;
                 }
                 let a = pos(e);
@@ -635,9 +752,6 @@ impl Actors {
                 let dist = delta.length();
                 let tank = matches!(e["weapon"].as_str(), Some("tank" | "mbt"));
                 if dist > 0.55 {
-                    if tank {
-                        self.add_burst(a + delta / dist * 3.45, 0.34);
-                    }
                     let len = (dist * 0.71).min(if tank { 8.4 } else { 4.1 });
                     self.tracers.push(Tracer {
                         a: b - delta / dist * len,
@@ -657,16 +771,6 @@ impl Actors {
                         self.add_burst(b, 0.67);
                     }
                 }
-            }
-            "tankFire" => {
-                let yaw = num(e, "yaw", 0.);
-                let pitch = num(e, "pitch", 0.);
-                let direction = vec3(
-                    yaw.sin() * pitch.cos(),
-                    pitch.sin(),
-                    -yaw.cos() * pitch.cos(),
-                );
-                self.add_burst(pos(e) + direction * 3.1, 0.65);
             }
             "shellImpact" => {
                 let hit = pos(e);
@@ -914,15 +1018,8 @@ impl Actors {
             dt,
             10.,
         );
-        let rem = num(p, "reload", 0.);
-        let duration = num(p, "reloadTime", 2.).max(0.01);
-        let rp = if rem > 0. {
-            1. - (rem / duration).clamp(0., 1.)
-        } else {
-            0.
-        };
-        let loading = (rp * PI).sin();
         let gun = Gun::equipped(p);
+        let reload = ReloadPose::sample(gun.body, reload_phase(p, 0.));
         let impulse = self.kick.max(num(p, "recoil", 0.));
         let recoil = impulse
             * gun.kick
@@ -936,19 +1033,24 @@ impl Actors {
         let throw = (self.throw_time / 0.41 * PI).sin();
         let x = 0.195 * (1. - self.aim)
             + throw * 0.088
-            + phase.sin() * 0.012 * self.movement * (1. - self.aim)
-            + 0.093 * loading;
+            + phase.sin() * 0.012 * self.movement * (1. - self.aim);
         let y = -0.206
             + (0.206 - gun.sight) * self.aim
             + 0.007 * (phase * 2.).cos() * self.movement * (1. - self.aim)
             + (self.clock * 1.55).sin() * 0.0014
             + 0.021 * recoil
-            - 0.113 * loading
             - 0.17 * throw;
-        let tf = translate(vec3(x, y, -0.535 + 0.058 * recoil))
-            * ry(0.11 * (1. - self.aim) - 0.36 * loading)
-            * rx(0.020 * (1. - self.aim) + 0.063 * recoil + 0.24 * loading)
-            * rz(-0.038 * (1. - self.aim) - 0.63 * loading + num(p, "hitFlash", 0.) * 0.04);
+        let walk = self.movement * (1. - self.aim);
+        let tf = translate(vec3(
+            x,
+            y + 0.119 * reload.ready,
+            -0.535 + 0.058 * recoil - 0.099 * reload.ready,
+        )) * ry(0.11 * (1. - self.aim) + 0.015 * phase.cos() * walk)
+            * rx(0.020 * (1. - self.aim) + 0.063 * recoil)
+            * rz(-0.038 * (1. - self.aim)
+                + 0.014 * phase.sin() * walk
+                + num(p, "hitFlash", 0.) * 0.04)
+            * reload.weapon(1.);
         let projection = Mat4::perspective_rh_gl(66f32.to_radians(), aspect.max(0.15), 0.025, 5.);
         let depth = Mat4::from_cols(
             Vec4::X,
@@ -957,33 +1059,26 @@ impl Actors {
             vec4(0., 0., -0.979, 1.),
         );
         set_camera(&SightCamera(depth * projection));
-        let travel =
-            (((rp / 0.31).clamp(0., 1.) * PI * 0.5).sin()) * (1. - smooth((rp - 0.68) / 0.28));
-        gun.draw(&self.rig, tf, impulse.max(travel), rp);
-        let hand_move = if gun.body == "mr7" {
-            vec3(0.081, -0.055, 0.194)
-        } else if gun.body == "vx9" {
-            vec3(0.094, -0.081, 0.229)
-        } else {
-            vec3(0.083, -0.049, 0.239)
-        };
-        let mut rest_offset = if gun.body == "vx9" {
+        gun.draw(&self.rig, tf, impulse.max(reload.cycle), &reload);
+        let mut rest = if gun.body == "vx9" {
             vec3(0., 0., -0.013)
         } else {
             Vec3::ZERO
         };
         if gun.grip == Some("grip_stable") {
-            rest_offset += vec3(0.013, -0.039, 0.016);
+            rest += vec3(0.013, -0.039, 0.016);
         }
-        self.rig.draw(
-            "left_hand",
-            tf * translate(hand_move * loading + rest_offset + vec3(-0.024, 0.31, -0.16) * throw)
-                * rz(0.17 * loading),
-        );
-        self.rig.draw(
-            "right_hand",
-            tf * translate(vec3(0.011, 0.007, 0.013) * travel + rest_offset),
-        );
+        let wrist = vec3(-0.061, -0.082, -0.344);
+        let support =
+            tf * translate(
+                reload.support_offset
+                    + rest * (1. - reload.ready)
+                    + vec3(-0.024, 0.31, -0.16) * throw,
+            ) * translate(wrist)
+                * rz(reload.wrist_roll)
+                * translate(-wrist);
+        self.rig.draw("left_hand", support);
+        self.rig.draw("right_hand", tf);
         if impulse > 0.78 {
             self.rig.draw(
                 "flash",
@@ -994,7 +1089,7 @@ impl Actors {
         }
         set_default_camera();
         // The sight image stays anchored to the optical axis once the gun is shouldered.
-        if self.aim > 0.78 && loading < 0.07 && throw < 0.03 && gun.optic != "optic_irons" {
+        if self.aim > 0.78 && reload.ready < 0.07 && throw < 0.03 && gun.optic != "optic_irons" {
             let opacity = smooth((self.aim - 0.78) / 0.22);
             let (cx, cy) = (screen_width() * 0.5, screen_height() * 0.5);
             let unit = (screen_height() / 720.).clamp(0.7, 2.2);

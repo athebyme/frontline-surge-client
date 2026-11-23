@@ -55,7 +55,7 @@ def uv_u16(value):
 
 
 keys = ['left_hand','right_hand','flash','optic_irons','optic_reflex','optic_scope','grip_light','grip_stable']
-keys += [f'{team}/{part}' for team in ('a','e') for part in ('torso','arms','mark','hip','shin')]
+keys += [f'{team}/{part}' for team in ('a','e') for part in ('torso','head','l_upper','l_lower','r_upper','r_lower','mark','hip','shin')]
 keys += [kind+part for kind in ('mr7','vx9','ar4') for part in ('','_mag','_slide')]
 wanted = {mesh.get('name'): mesh for mesh in doc['meshes']}
 output = bytearray(b'FRA1'+struct.pack('<H',len(keys)))

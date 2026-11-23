@@ -1,7 +1,7 @@
 //! Per-building surfaces from the *same* layout as the authoritative simulation.
 //! Each quad remembers its cell and its neighbor. Removing a cell both makes a hole
 //! and exposes the cut faces behind it. Only that building's index buffers change.
-use super::{dead, in_frustum, mq, number, prop_model, Page, PageKind, LOD_SWITCH_METERS};
+use super::{dead, in_frustum, mq, number, prop_model, Page, PageKind};
 use frontline_surge::fracture::{Cell, Layout, Material};
 use macroquad::prelude::*;
 use serde_json::Value;
@@ -197,8 +197,83 @@ fn world_bounds(model: Mat4, size: Vec3) -> (Vec3, Vec3) {
         + Vec3::splat(0.22);
     (middle - half, middle + half)
 }
+// A single dynamic page per marked building. Neither unmarked buildings nor
+// unchanged snapshots allocate or upload scar vertices.
+const MAX_SCAR_QUADS: usize = 48 * 6;
+fn scar_geometry(
+    cells: &[Cell],
+    neighbors: &[[u16; 6]],
+    broken: &[bool],
+    marks: &Value,
+) -> (Vec<Vertex>, Vec<u16>) {
+    let mut vertices = Vec::new();
+    let mut indices = Vec::new();
+    for code in marks
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(48)
+        .filter_map(Value::as_u64)
+    {
+        let id = (code >> 8) as usize;
+        let Some(c) = cells.get(id) else { continue };
+        let stage = (code & 3) as usize;
+        if stage == 0 || broken[id] {
+            continue;
+        }
+        let mut center = Vec3::from_array(c.center);
+        let size = Vec3::from_array(c.size);
+        let seed = (id as u32).wrapping_mul(53);
+        let jitter = vec3(
+            random(seed + 1) - 0.5,
+            random(seed + 2) - 0.5,
+            random(seed + 3) - 0.5,
+        ) * 0.12;
+        center += jitter * size;
+        for (face, axis) in AXIS.iter().enumerate() {
+            if code & (4 << face) == 0 {
+                continue;
+            }
+            let next = neighbors[id][face];
+            if next != NONE && !broken[next as usize] {
+                continue;
+            }
+            let n = Vec3::new(axis[0] as f32, axis[1] as f32, axis[2] as f32);
+            let half = [0., 0.48, 0.72, 0.92][stage];
+            let face_center = center - n * (center - Vec3::from_array(c.center)).dot(n) + n * 0.005;
+            let extent = size * (Vec3::splat(half) + n.abs() * (1. - half));
+            let pts = faces_for(face_center, extent, face);
+            let color = if stage == 1 {
+                [125, 106, 86]
+            } else {
+                [89, 72, 57]
+            };
+            let tile = if (id + face) % 2 == 0 { 25 } else { 29 };
+            let uv = [
+                [0.005, 0.005],
+                [0.995, 0.005],
+                [0.995, 0.995],
+                [0.005, 0.995],
+            ];
+            let base = vertices.len() as u16;
+            for (i, p) in pts.iter().enumerate() {
+                vertices.push(Vertex {
+                    p: p.to_array(),
+                    n: n.to_array(),
+                    uv: uv[(i + (id + face) % 4) % 4],
+                    style: [color[0], color[1], color[2], tile],
+                });
+            }
+            indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+        }
+    }
+    (vertices, indices)
+}
 struct Building {
     parts: Vec<Part>,
+    scar_page: Option<Page>,
+    scar_revision: u64,
+    neighbors: Vec<[u16; 6]>,
     cells: Vec<Cell>,
     model: Mat4,
     low: Vec3,
@@ -226,6 +301,7 @@ impl Building {
         let cottage = kind == "house";
         let barn = kind == "barn";
         let mut writer = Writer::new();
+        let mut neighbors = Vec::with_capacity(cells.len());
         let mut parts = Vec::new();
         let plaster = if p["style"].as_str() == Some("dispatch") {
             [165, 174, 162, 19]
@@ -302,6 +378,7 @@ impl Building {
             }
             // Shallow facade details remain attached to their owning masonry cell.
             // They dress the edge of the opening without bridging a traversable door or a window.
+            neighbors.push(adjacent);
             if (barn || cottage) && local.y < h * 0.70 {
                 for &face in &[0usize, 1, 4, 5] {
                     let dir = AXIS[face];
@@ -336,7 +413,9 @@ impl Building {
                         );
                     }
                     let underside = local.y - block.y * 0.5;
-                    if cottage && adjacent[3] == NONE && (1.6..=3.6).contains(&underside)
+                    if cottage
+                        && adjacent[3] == NONE
+                        && (1.6..=3.6).contains(&underside)
                         && matches!(c.material, Material::Brick | Material::Wood)
                     {
                         // Each lintel segment sits within the solid cell above the original opening.
@@ -408,6 +487,9 @@ impl Building {
         let (low, high) = world_bounds(model, size);
         Some(Self {
             parts,
+            scar_page: None,
+            scar_revision: 0,
+            neighbors,
             cells,
             model,
             low,
@@ -421,7 +503,9 @@ impl Building {
     fn snapshot(&mut self, prop: &Value, gpu: &mut dyn mq::RenderingBackend) -> bool {
         let revision = prop["revision"].as_u64().unwrap_or(0);
         let gone = dead(prop);
-        if self.revision == revision && self.dead == gone {
+        let scar_rev = prop["scarRevision"].as_u64().unwrap_or(0);
+        let geometry_changed = self.revision != revision || self.dead != gone;
+        if !geometry_changed && self.scar_revision == scar_rev {
             return false;
         }
         self.dead = gone;
@@ -442,12 +526,42 @@ impl Building {
             }
             self.revision = revision;
         }
-        true
+        let (vertices, indices) =
+            scar_geometry(&self.cells, &self.neighbors, &self.broken, &prop["scars"]);
+        if !vertices.is_empty() {
+            let page = self.scar_page.get_or_insert_with(|| Page {
+                vertices: gpu.new_buffer(
+                    mq::BufferType::VertexBuffer,
+                    mq::BufferUsage::Dynamic,
+                    mq::BufferSource::empty::<Vertex>(MAX_SCAR_QUADS * 4),
+                ),
+                indices: gpu.new_buffer(
+                    mq::BufferType::IndexBuffer,
+                    mq::BufferUsage::Dynamic,
+                    mq::BufferSource::empty::<u16>(MAX_SCAR_QUADS * 6),
+                ),
+                count: 0,
+                low: self.low,
+                high: self.high,
+                kind: PageKind::Template,
+            });
+            gpu.buffer_update(page.vertices, mq::BufferSource::slice(&vertices));
+            gpu.buffer_update(page.indices, mq::BufferSource::slice(&indices));
+            page.count = indices.len() as i32;
+        } else if let Some(page) = &mut self.scar_page {
+            page.count = 0;
+        }
+        self.scar_revision = scar_rev;
+        geometry_changed
     }
     fn release(&mut self, gpu: &mut dyn mq::RenderingBackend) {
         for p in &self.parts {
             gpu.delete_buffer(p.page.vertices);
             gpu.delete_buffer(p.page.indices);
+        }
+        if let Some(p) = self.scar_page.take() {
+            gpu.delete_buffer(p.vertices);
+            gpu.delete_buffer(p.indices);
         }
     }
 }
@@ -566,7 +680,7 @@ impl BreakableScenery {
             self.chunks.clear();
             self.last_event = None;
             for b in self.authored.iter_mut().flatten() {
-                changed |= b.snapshot(&Value::Null, gpu);
+                b.snapshot(&Value::Null, gpu);
             }
             self.round = round;
             changed = true;
@@ -718,6 +832,7 @@ impl BreakableScenery {
         planes: &[Vec4; 6],
         eye: Vec3,
         shadow: bool,
+        model_range_sq: f32,
         draw: &mut impl FnMut(&Page, Mat4, f32),
     ) {
         for b in self.authored.iter().chain(self.built.iter()).flatten() {
@@ -726,14 +841,20 @@ impl BreakableScenery {
             }
             if b.lod
                 && b.revision == 0
-                && ((b.low + b.high) * 0.5).distance_squared(eye)
-                    >= LOD_SWITCH_METERS * LOD_SWITCH_METERS
+                && ((b.low + b.high) * 0.5).distance_squared(eye) >= model_range_sq
             {
                 continue;
             }
             for part in &b.parts {
                 if part.page.count > 0 {
                     draw(&part.page, b.model, 1.);
+                }
+            }
+            if !shadow && ((b.low + b.high) * 0.5).distance_squared(eye) < 65.0_f32.powi(2) {
+                if let Some(p) = &b.scar_page {
+                    if p.count > 0 {
+                        draw(p, b.model, 1.);
+                    }
                 }
             }
         }
@@ -756,5 +877,35 @@ impl BreakableScenery {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod damage_render_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn marks_only_cover_intact_exposed_faces_and_are_removed_with_their_cell() {
+        let cell = Cell {
+            center: [0., 0.5, 0.],
+            size: [1., 1., 1.],
+            material: Material::Brick,
+        };
+        let cells = [cell.clone(), cell];
+        let mut neighbors = [[NONE; 6]; 2];
+        neighbors[0][4] = 1;
+        let marks = json!([(4 << 4) | (4 << 5) | 2]);
+        let (v, i) = scar_geometry(&cells, &neighbors, &[false, false], &marks);
+        assert_eq!((v.len(), i.len()), (4, 6));
+        assert!(v.iter().all(|v| v.p[2] < -0.5 && v.n == [0., 0., -1.]));
+        assert_eq!(
+            scar_geometry(&cells, &neighbors, &[false, true], &marks)
+                .0
+                .len(),
+            8
+        );
+        assert!(scar_geometry(&cells, &neighbors, &[true, false], &marks)
+            .0
+            .is_empty());
     }
 }

@@ -4,6 +4,7 @@
 mod fracture_mesh;
 #[path = "world_vehicles.rs"]
 mod moving;
+use crate::settings::{Graphics, Tier};
 use fracture_mesh::BreakableScenery;
 use macroquad::miniquad as mq;
 use macroquad::prelude::*;
@@ -14,9 +15,6 @@ use std::collections::HashMap;
 const TERRAIN: &[u8] = include_bytes!("../assets/province.frmesh");
 const ATLAS: &[u8] = include_bytes!("../assets/terrain-atlas.png");
 const LAND_COVER: &[u8] = include_bytes!("../assets/land-cover.png");
-const LOD_SWITCH_METERS: f32 = 93.0;
-const FOLIAGE_RANGE_METERS: f32 = 88.0;
-const SHADOW_SIZE: u32 = 1024;
 const VERTEX_BYTES: usize = 36;
 
 struct Page {
@@ -72,6 +70,7 @@ struct SceneUniforms {
     sky_state: [f32; 4],
     sun: [f32; 3],
     lamps: [[f32; 4]; 4],
+    graphics: [f32; 4],
 }
 
 #[repr(C)]
@@ -133,6 +132,7 @@ pub struct World {
     shadow_pass: mq::RenderPass,
     lighting: Mat4,
     shadow_dirty: bool,
+    graphics: Graphics,
 }
 
 fn shader(
@@ -155,9 +155,25 @@ fn shader(
         .unwrap_or_else(|e| panic!("Village shader: {e}"))
 }
 
+fn shadow_target(gpu: &mut dyn mq::RenderingBackend, size: u32) -> (mq::TextureId, mq::RenderPass) {
+    let tex = mq::TextureParams {
+        width: size,
+        height: size,
+        min_filter: mq::FilterMode::Nearest,
+        mag_filter: mq::FilterMode::Nearest,
+        ..Default::default()
+    };
+    let shadow = gpu.new_render_texture(tex);
+    let shadow_depth = gpu.new_render_texture(mq::TextureParams {
+        format: mq::TextureFormat::Depth,
+        ..tex
+    });
+    (shadow, gpu.new_render_pass(shadow, Some(shadow_depth)))
+}
+
 impl World {
     /// Create once on the native window's main thread, after graphics initialization.
-    pub fn new() -> Self {
+    pub fn new(graphics: Graphics) -> Self {
         let atlas = Texture2D::from_file_with_format(ATLAS, None);
         atlas.set_filter(FilterMode::Linear);
         let land_cover = Texture2D::from_file_with_format(LAND_COVER, None);
@@ -184,6 +200,7 @@ impl World {
                 ("LampB", Float4),
                 ("LampC", Float4),
                 ("LampD", Float4),
+                ("Graphics", Float4),
             ],
             &["Atlas", "ShadowMap", "LandCover"],
         );
@@ -277,19 +294,7 @@ impl World {
             ),
             images: vec![],
         };
-        let tex = mq::TextureParams {
-            width: SHADOW_SIZE,
-            height: SHADOW_SIZE,
-            min_filter: mq::FilterMode::Nearest,
-            mag_filter: mq::FilterMode::Nearest,
-            ..Default::default()
-        };
-        let shadow = gpu.new_render_texture(tex);
-        let shadow_depth = gpu.new_render_texture(mq::TextureParams {
-            format: mq::TextureFormat::Depth,
-            ..tex
-        });
-        let shadow_pass = gpu.new_render_pass(shadow, Some(shadow_depth));
+        let (shadow, shadow_pass) = shadow_target(gpu, graphics.shadow_size());
         assert_eq!(&TERRAIN[..4], b"FZQ2", "Unknown compressed map");
         let expected = u32::from_le_bytes(TERRAIN[4..8].try_into().unwrap()) as usize;
         let art = miniz_oxide::inflate::decompress_to_vec_zlib_with_limit(&TERRAIN[8..], expected)
@@ -428,6 +433,7 @@ impl World {
             shadow_pass,
             lighting,
             shadow_dirty: true,
+            graphics,
         }
     }
 
@@ -448,7 +454,7 @@ impl World {
         };
         self.place(key, at, out);
     }
-    fn sync(&mut self, state: Option<&Value>, eye: Vec3) {
+    fn sync(&mut self, state: Option<&Value>, eye: Vec3, motion: &crate::motion::Motion) {
         let round = state.and_then(|s| s["round"].as_u64());
         if self.round != round || state.is_none() {
             self.vehicles.clear();
@@ -534,15 +540,14 @@ impl World {
             }
         }
         if let Some(vehicles) = state.and_then(|s| s["vehicles"].as_array()) {
-            let dt = get_frame_time().clamp(0., 0.10);
-            let t = 1. - (-dt * 22.).exp();
             let mut current = std::collections::HashSet::with_capacity(vehicles.len());
             for v in vehicles {
                 let Some(id) = v["id"].as_u64() else { continue };
                 let key = v["kind"].as_str().unwrap_or("");
-                let pos = vec3(number(v, "x", 0.), 0., number(v, "z", 0.));
-                let yaw = number(v, "yaw", 0.);
-                let turret = number(v, "turretYaw", yaw);
+                let rendered = motion.vehicle(v);
+                let pos = rendered.position;
+                let yaw = rendered.yaw;
+                let turret = rendered.turret;
                 let wreck = dead(v)
                     || v["destroyed"].as_bool() == Some(true)
                     || v["alive"].as_bool() == Some(false);
@@ -552,30 +557,20 @@ impl World {
                     yaw,
                     turret,
                     wreck,
-                    travel: number(v, "travel", 0.),
+                    travel: rendered.travel,
                     differential: 0.,
-                    steer: number(v, "steering", 0.),
+                    steer: rendered.steering,
                 };
                 let pose = self.vehicles.entry(id).or_insert(initial);
-                if pose.pos.distance_squared(pos) > 81. || pose.wreck != wreck {
-                    *pose = initial;
-                } else {
-                    let previous = pose.pos;
-                    let head = angle_delta(pose.yaw, yaw) * t;
-                    pose.pos = pose.pos.lerp(pos, t);
-                    pose.yaw += head;
-                    pose.turret += angle_delta(pose.turret, turret) * t;
-                    pose.differential += head;
-                    let along =
-                        (pose.pos - previous).dot(vec3(pose.yaw.sin(), 0., -pose.yaw.cos()));
-                    if let Some(target) = v["travel"].as_f64() {
-                        pose.travel += (target as f32 - pose.travel) * t;
-                    } else {
-                        pose.travel += along;
+                let mut now = initial;
+                if pose.pos.distance_squared(pos) <= 81. && pose.wreck == wreck {
+                    now.differential = pose.differential + angle_delta(pose.yaw, yaw);
+                    if !v["travel"].is_number() {
+                        let forward = vec3(yaw.sin(), 0., -yaw.cos());
+                        now.travel = pose.travel + (pos - pose.pos).dot(forward);
                     }
-                    pose.steer += (number(v, "steering", 0.) - pose.steer) * t;
                 }
-                let now = *pose;
+                *pose = now;
                 let transform = Mat4::from_rotation_translation(
                     Quat::from_rotation_y(std::f32::consts::PI - now.yaw),
                     now.pos,
@@ -589,16 +584,15 @@ impl World {
                         "blue"
                     };
                     self.place(&format!("{key}_{team}"), transform, &mut next_dynamic);
-                    if matches!(key, "mbt" | "apc") {
-                        let pivot = if key == "mbt" {
-                            vec3(0., 1.73, 0.34)
-                        } else {
-                            vec3(0., 2., 0.35)
-                        };
-                        let turret = transform
-                            * Mat4::from_translation(pivot)
-                            * Mat4::from_rotation_y(now.yaw - now.turret);
+                    if let Some(mount) = crate::vehicle_camera::GunMount::for_vehicle(key) {
+                        let pitch = crate::vehicle_camera::gun_pitch(v, state, motion);
+                        let turret = mount.turret(now.pos, now.yaw, now.turret);
                         self.place(&format!("{key}_turret_{team}"), turret, &mut next_dynamic);
+                        self.place(
+                            &format!("{key}_barrel_{team}"),
+                            mount.barrel(turret, pitch),
+                            &mut next_dynamic,
+                        );
                     }
                     self.place_drivetrain(key, now, transform, &mut next_dynamic);
                     if v["driver"].is_number() {
@@ -672,6 +666,25 @@ impl World {
         }
     }
 
+    pub fn set_graphics(&mut self, graphics: Graphics) {
+        if graphics == self.graphics {
+            return;
+        }
+        if graphics.shadows != self.graphics.shadows {
+            let mut gl = unsafe { get_internal_gl() };
+            gl.flush();
+            let gpu = gl.quad_context;
+            let (texture, pass) = shadow_target(gpu, graphics.shadow_size());
+            // The native GL backend releases both attachments with their framebuffer.
+            gpu.delete_render_pass(self.shadow_pass);
+            self.shadow = texture;
+            self.shadow_pass = pass;
+            self.last_shadow_at = -1.;
+        }
+        self.shadow_dirty = true;
+        self.graphics = graphics;
+    }
+
     fn submit(&self, gpu: &mut dyn mq::RenderingBackend, vp: Mat4, eye: Vec3, shadow_pass: bool) {
         let texture_set = [
             self.atlas.raw_miniquad_id(),
@@ -698,6 +711,7 @@ impl World {
                         sky_state: self.sky.uniforms(),
                         sun: self.sky.sun.to_array(),
                         lamps: self.lamps,
+                        graphics: self.graphics.shader(),
                     }));
                 }
                 last_model = Some((model, fade));
@@ -706,6 +720,8 @@ impl World {
             gpu.draw(0, p.count, 1);
         };
         let planes = frustum(if shadow_pass { self.lighting } else { vp });
+        let foliage_range_sq = self.graphics.foliage_distance().powi(2);
+        let model_range_sq = self.graphics.model_distance().powi(2);
         for p in &self.pages {
             let center = (p.low + p.high) * 0.5;
             let distance = center.distance_squared(eye);
@@ -720,21 +736,13 @@ impl World {
                 PageKind::Terrain | PageKind::Foliage | PageKind::Backdrop if shadow_pass => {
                     continue
                 }
-                PageKind::Foliage if distance > FOLIAGE_RANGE_METERS * FOLIAGE_RANGE_METERS => {
-                    continue
-                }
+                PageKind::Foliage if distance > foliage_range_sq => continue,
                 PageKind::Prop(i)
-                    if self.hidden[i]
-                        || (self.has_lod[i]
-                            && distance >= LOD_SWITCH_METERS * LOD_SWITCH_METERS) =>
+                    if self.hidden[i] || (self.has_lod[i] && distance >= model_range_sq) =>
                 {
                     continue
                 }
-                PageKind::PropLod(i)
-                    if self.hidden[i] || distance < LOD_SWITCH_METERS * LOD_SWITCH_METERS =>
-                {
-                    continue
-                }
+                PageKind::PropLod(i) if self.hidden[i] || distance < model_range_sq => continue,
                 _ => {}
             }
             if !in_frustum(&planes, p.low, p.high) {
@@ -742,7 +750,8 @@ impl World {
             }
             draw(p, Mat4::IDENTITY, 1.);
         }
-        self.breakables.visit(&planes, eye, shadow_pass, &mut draw);
+        self.breakables
+            .visit(&planes, eye, shadow_pass, model_range_sq, &mut draw);
         for placed in &self.dynamic {
             let p = &self.pages[placed.page];
             let center = placed.transform.transform_point3((p.low + p.high) * 0.5);
@@ -764,10 +773,15 @@ impl World {
 
     /// Draw while a Macroquad 3D camera is active. The following actor/weapon renderer
     /// can use normal Macroquad drawing calls; this pass shares its existing depth buffer.
-    pub fn draw(&mut self, state: Option<&Value>, camera_pos: Vec3) {
+    pub fn draw(
+        &mut self,
+        state: Option<&Value>,
+        camera_pos: Vec3,
+        motion: &crate::motion::Motion,
+    ) {
         let elapsed = state.map_or(0., |s| number(s, "elapsed", 0.));
         self.sky = SkyState::at(elapsed);
-        self.sync(state, camera_pos);
+        self.sync(state, camera_pos, motion);
         let tick = get_time();
         // Keep fine shadow texels near the active camera even at the remote motor pools.
         // Snapping to metres avoids shimmering whilst walking and limits map refresh work.
@@ -795,7 +809,10 @@ impl World {
             if self.breakables.sync(state, gpu, tick) {
                 self.shadow_dirty = true;
             }
-            if self.shadow_dirty && (moved || tick - self.last_shadow_at >= 0.095) {
+            if self.graphics.shadows != Tier::Low
+                && self.shadow_dirty
+                && (moved || tick - self.last_shadow_at >= self.graphics.shadow_interval())
+            {
                 gpu.begin_pass(
                     Some(self.shadow_pass),
                     mq::PassAction::clear_color(1., 1., 1., 1.),

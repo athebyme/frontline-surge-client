@@ -8,7 +8,7 @@ const materials=[
  ['amber','#c7904f','light'],['brake','#974844','glass'],['convoy','#718074','metal'],
  ['convoyShade','#515e58','metal'],['composite','#6e766b','metal'],['compositeEdge','#859084','metal'],
  ['optic','#4e8587','glass'],['freight','#687f86','metal'],['freightEdge','#839598','metal'],
- ['industrial','#a3aba3','metal'],['asphalt','#6f7370','gravel'],['railYellow','#ceaa65','metal'],
+ ['industrial','#a3aba3','metal'],['asphalt','#6f7370','asphalt'],['railYellow','#ceaa65','metal'],
  ['stripeWhite','#c3c4ac','plaster'],['charred','#494d47','metal'],['slateBody','#576f77','metal'],['slateArmor','#778b8d','metal'],['fieldBlue','#48869c','metal'],['signalBlue','#92c4ca','light'],['coyote','#a39273','metal'],['dune','#b5a389','metal'],['clay','#9e6856','metal'],['fieldRed','#a35246','metal'],['gaiter','#4d5450','cloth'],['runningLamp','#edac54','light'],['readyLamp','#98cc94','light'],['standbyLamp','#728783','glass'],['ochreDust','#938772','cloth']
 ];
 function wheel(r,x,y,z,radius,thick,side=Math.sign(x)||1){
@@ -143,7 +143,7 @@ function mbt(r,mobile=false){
   }
   r.cylinder(0,1.51,.34,.88,.88,.145,'graphite',12);
 }
-function turret(r){
+function turret(r,mobile=false){
   // Turret origin lies at 1.73m above the hull. Local +Z follows the fire direction.
   r.cylinder(0,-.06,0,.91,.96,.28,'convoyShade',8,.39);
   panel(r,0,.13,-.04,1.79,.55,1.82,'composite');
@@ -154,9 +154,7 @@ function turret(r){
     for(let i=0;i<3;i++)r.cylinder(s*(.78+i*.10),.46,-.17,.083,.080,.17,'graphite',7,0,s*.30);
   }
   panel(r,0,.23,.96,.51,.40,.36,'graphite');
-  r.cylinder(0,.24,2.14,.11,.078,2.19,'composite',12,0,halfPi);
-  r.cylinder(0,.24,1.53,.135,.135,.54,'graphite',12,0,halfPi);
-  r.cylinder(0,.24,2.63,.112,.088,.16,'convoyShade',10,0,halfPi);
+  if(!mobile)r.group(0,.24,.96,0,()=>mbtBarrel(r));
   r.cylinder(.40,.461,-.36,.30,.29,.075,'graphite',10);
   panel(r,-.31,.55,-.27,.39,.29,.40,'graphite');
   panel(r,-.31,.585,-.044,.28,.115,.041,'optic');
@@ -184,7 +182,7 @@ function telecom(r,site,drawLegacyMast){
     for(let i=0;i<5;i++)panel(r,1.15,.68+i*.095,.627,.33,.025,.028,'industrial');
   });
 }
-const objects={patrol4x4:patrol,cargo6x6:cargo,scout_buggy:buggy,apc,mbt,mbt_turret:turret,apc_turret:apcTurret};
+const objects={patrol4x4:patrol,cargo6x6:cargo,scout_buggy:buggy,apc,mbt,mbt_turret:turret,apc_turret:apcTurret,mbt_barrel:mbtBarrel,apc_barrel:apcBarrel};
 function wreck(r,kind){
   const heavy=kind==='mbt',cargoType=kind==='cargo6x6',carrier=kind==='apc';
   const w=heavy?2.9:carrier?2.68:cargoType?2.3:1.84,d=heavy?5.82:carrier?6.24:cargoType?6.1:3.6;
@@ -278,10 +276,26 @@ function apc(r,mobile=false){
   }
   if(!mobile)r.group(0,2.,.35,0,()=>apcTurret(r));
 }
-function apcTurret(r){
+function apcTurret(r,mobile=false){
   r.cylinder(0,.08,0,.41,.39,.18,'convoyShade',10);
   panel(r,0,.31,0,.51,.34,.61,'composite');panel(r,-.10,.36,.33,.21,.112,.069,'optic');
-  r.cylinder(.12,.26,.65,.053,.046,.99,'graphite',8,0,halfPi);
+  if(!mobile)r.group(.12,.26,.22,0,()=>apcBarrel(r));
+}
+function mbtBarrel(r){
+  r.cylinder(0,0,1.18,.108,.078,2.19,'composite',14,0,halfPi);
+  r.cylinder(0,0,.54,.14,.123,.61,'convoyShade',14,0,halfPi);
+  // Overlapping cuffs break up the long outline and stay readable from the optics.
+  for(const z of [.21,.48,.79,1.64])r.cylinder(0,0,z,.142,.14,.057,'compositeEdge',14,0,halfPi);
+  r.cylinder(0,0,2.19,.099,.095,.225,'graphite',14,0,halfPi);
+  r.cylinder(0,0,2.308,.068,.068,.014,'underbody',14,0,halfPi);
+  r.cylinder(.265,-.065,.46,.035,.037,.95,'graphite',10,0,halfPi);
+  r.cylinder(.265,-.065,.87,.044,.044,.13,'compositeEdge',10,0,halfPi);
+}
+function apcBarrel(r){
+  r.cylinder(0,0,.43,.056,.043,.99,'graphite',10,0,halfPi);
+  for(const z of [.14,.22,.30])r.cylinder(0,0,z,.067,.067,.034,'convoyShade',10,0,halfPi);
+  r.cylinder(0,0,.87,.062,.057,.15,'compositeEdge',10,0,halfPi);
+  r.cylinder(0,0,.949,.038,.038,.012,'underbody',10,0,halfPi);
 }
 const vehicleClasses=['scout_buggy','patrol4x4','apc','cargo6x6','mbt'];
 const teamPaint={
@@ -294,6 +308,8 @@ function factionVehicle(r,kind,team){
   const shell=Object.create(r);
   shell._material=key=>r._material(paint[key]||key);
   base(shell,true,team);
+  if(kind.endsWith('_barrel'))return;
+  if(vehicleClasses.includes(kind))serviceEquipment(shell,kind,blue);
   const ink=blue?'fieldBlue':'fieldRed', pale=blue?'signalBlue':'edgeTan';
   if(kind==='apc_turret'){
     if(blue){panel(r,-.28,.41,-.04,.19,.24,.33,'slateArmor');panel(r,-.28,.44,.144,.14,.10,.035,'optic');}
@@ -353,6 +369,58 @@ function factionVehicle(r,kind,team){
     r.cylinder(cx-.18,roof+.13,cz,.149,.149,.77,'gaiter',8,0,0,halfPi);
     for(const dx of [-.43,.08])r.cylinder(cx+dx,roof+.13,cz,.154,.154,.046,'edgeTan',8,0,0,halfPi);
     r.beam(cx+.38,roof,cz,cx+.48,roof+.56,cz-.13,.027,.027,'graphite');
+  }
+}
+// Bake the equipment with its chassis. Silhouette details add no runtime submissions.
+function serviceEquipment(r,kind,blue){
+  const trim=blue?'compositeEdge':'edgeTan';
+  if(kind==='scout_buggy'){
+    for(const side of [-1,1]){
+      // Raised lamps and protective hoops belong to the open trail chassis.
+      r.beam(side*.65,.68,1.53,side*.65,.96,1.58,.054,.055,'graphite');
+      r.beam(side*.65,.96,1.58,side*.48,1.03,1.58,.048,.051,trim);
+      r.beam(side*.49,1.66,-.68,side*.49,1.09,-1.34,.053,.058,'convoyShade');
+      r.beam(side*.66,.89,.28,side*.48,.72,-.64,.043,.046,'edgeTan');
+    }
+    r.cylinder(0,.80,1.53,.107,.107,.49,'industrial',12,0,0,halfPi);
+    for(const x of [-.25,.25])r.cylinder(x,.80,1.53,.14,.14,.043,'graphite',10,0,0,halfPi);
+    panel(r,0,.74,1.64,.50,.068,.040,trim);
+  }else if(kind==='patrol4x4'){
+    for(const s of [-1,1]){
+      r.beam(s*.54,.65,1.91,s*.54,1.09,1.92,.055,.062,'graphite');
+      r.beam(s*.54,1.09,1.92,s*.82,1.06,1.86,.04,.044,'graphite');
+      r.beam(s*.54,1.00,1.92,s*.82,.97,1.86,.032,.033,trim);
+      r.beam(s*.48,1.26,.80,s*.22,1.45,.73,.018,.017,'underbody');
+      r.beam(s*.69,1.87,-1.08,s*.69,1.99,-1.08,.041,.041,'graphite');
+      r.beam(s*.69,1.99,-1.08,s*.69,1.99,.18,.041,.041,'graphite');
+      r.beam(s*.69,1.99,.18,s*.69,1.87,.18,.041,.041,'graphite');
+    }
+    for(const z of [-1.04,-.45,.15])panel(r,0,1.98,z,1.41,.043,.052,trim);
+  }else if(kind==='cargo6x6'){
+    // Offset ladder, grab handles and a downward exhaust line on the cab.
+    for(const x of [-.90,-.52])r.beam(x,1.02,-3.02,x,2.51,-3.02,.046,.053,'graphite');
+    for(const y of [1.11,1.38,1.65,1.92,2.19,2.46])panel(r,-.71,y,-3.035,.40,.039,.052,'industrial');
+    r.cylinder(.98,1.70,.56,.103,.103,1.21,'graphite',10);
+    r.cylinder(.98,2.43,.56,.069,.062,.42,'industrial',10,0,0,-.14);
+    for(const y of [1.37,1.99])r.cylinder(.98,y,.56,.115,.115,.068,trim,10);
+    for(const s of [-1,1])r.beam(s*.85,1.82,2.321,s*.42,2.01,2.285,.025,.021,'graphite');
+  }else if(kind==='apc'){
+    // The ramp hinges interlock with the rear face, the perimeter rail stands off the roof.
+    for(const s of [-1,1]){
+      r.beam(s*.94,2.05,-2.11,s*.94,2.26,-2.11,.046,.046,'graphite');
+      r.beam(s*.94,2.26,-2.11,s*.94,2.26,-.49,.045,.051,trim);
+      r.beam(s*.94,2.26,-.49,s*.94,2.05,-.49,.046,.046,'graphite');
+      for(const x of [.22,.67])r.cylinder(s*x,1.01,-2.92,.07,.07,.23,'industrial',8,0,0,halfPi);
+      r.beam(s*.09,1.67,-2.925,s*.70,1.15,-2.925,.055,.037,trim);
+    }
+  }else{
+    for(const s of [-1,1]){
+      // Curved tow loop and straps below the front glacis.
+      r.beam(s*.65,.89,2.86,s*.87,.69,2.87,.054,.054,'industrial');
+      r.beam(s*.87,.69,2.87,s*1.03,.83,2.84,.054,.054,'industrial');
+      r.beam(s*1.03,.83,2.84,s*1.08,1.08,2.63,.054,.054,'industrial');
+      for(const z of [-2.16,-1.51])panel(r,s*.99,1.59,z,.28,.043,.077,trim);
+    }
   }
 }
 function roadwheel(r,kind){

@@ -1,7 +1,7 @@
 'use strict';
 // Original buildings, vegetation, vehicles and furniture for the native mesh baker.
   const materials = [
-    ['lime','#b5ac8e','plaster'], ['ochre','#ac906b','plaster'], ['whitewash','#c3b89f','plaster'],
+    ['concrete','#aaaa98','concrete'], ['lime','#b5ac8e','plaster'], ['ochre','#ac906b','plaster'], ['whitewash','#c3b89f','plaster'],
     ['brickwork','#985d45','brick'], ['rubble','#827e6b','stone'], ['limestone','#aaa184','stone'],
     ['basalt','#697066','stone'], ['slate','#4f5855','roof'], ['terracotta','#965d45','roof'],
     ['tileEdge','#80513e','plaster'], ['lead','#606661','metal'], ['soot','#333a35','plaster'],
@@ -381,7 +381,7 @@
   }
   function oilwell(r){
     // Compact field pumpjack. The horizontal beam and balance wheel identify a crude site.
-    r.box(0,.081,0,2.18,.162,1.65,'rubble');
+    r.box(0,.081,0,2.18,.162,1.65,'concrete');
     for(const side of [-1,1]){
       r.box(0,.196,side*.472,1.95,.10,.097,'iron');
       stick(r,-.208,.251,side*.448,.111,1.97,side*.241,.107,.099,'truckDark');
@@ -403,7 +403,7 @@
     iconBoard(r,0,1.06,.489,0,'oil');
   }
   function refinery(r){
-    r.box(0,.114,0,3.20,.228,2.68,'rubble');
+    r.box(0,.114,0,3.20,.228,2.68,'concrete');
     for(const side of [-1,1])r.box(side*1.32,.26,0,.139,.129,2.25,'iron');
     for(const x of [-.72,.33]){
       const height=x<0?1.74:1.33;
@@ -424,7 +424,7 @@
     for(let i=0;i<4;i++)r.box(.953,.286,.673+i*.102,.55,.047,.04,'steel');
   }
   function workshop(r){
-    r.box(0,.098,0,2.88,.196,2.09,'rubble');
+    r.box(0,.098,0,2.88,.196,2.09,'concrete');
     for(const x of [-1.23,1.23])for(const z of [-.852,.851])
       r.box(x,1.235,z,.117,2.26,.141,'weatherWood');
     r.box(0,2.397,0,2.89,.124,2.27,'slate',0,-.078);
@@ -451,7 +451,7 @@
   }
   function garage(r){
     const width=4.36,depth=4.03;
-    r.box(0,.086,0,width,.172,depth,'rubble');
+    r.box(0,.086,0,width,.172,depth,'concrete');
     for(const s of [-1,1])for(const z of [-1.82,-.21,1.80]){
       r.box(s*2.038,1.25,z,.155,2.40,.159,'darkWood');
       stick(r,s*2.031,1.808,z,s*1.67,2.408,z,.097,.097,'weatherWood');

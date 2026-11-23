@@ -12,6 +12,7 @@ PAGES = [
     ("docs/history.md", "history", "История версий"),
     ("docs/architecture.md", "architecture", "Архитектура"),
     ("docs/decisions/playtest-05.md", "decisions", "Решения плейтеста"),
+    ("docs/decisions/graphics-settings.md", "graphics", "Настройки графики"),
     ("docs/main-protection.md", "main-protection", "Защита main"),
     ("AGENTS.md", "agents", "Работа с проектом"),
     ("BALANCE.md", "balance", "Баланс"),
@@ -54,9 +55,9 @@ def main():
         articles.append(f'<article id="{slug}">{html}</article>')
     document = ('<!doctype html><html lang="ru"><meta charset="utf-8">'
                 '<meta name="viewport" content="width=device-width,initial-scale=1">'
-                '<title>Линия фронта · портал разработки 0.5.1</title>'
+                '<title>Линия фронта · портал разработки 0.5.2</title>'
                 f'<style>{STYLE}</style><nav aria-label="Страницы проекта"><strong>Линия фронта</strong>'
-                f'<small>Документация · v0.5.1</small>{navigation}</nav><main>{"".join(articles)}</main></html>')
+                f'<small>Документация · v0.5.2</small>{navigation}</nav><main>{"".join(articles)}</main></html>')
     (ROOT / "docs/index.html").write_text(document, encoding="utf8")
 
 if __name__ == "__main__":

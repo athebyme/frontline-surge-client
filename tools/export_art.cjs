@@ -135,7 +135,7 @@ for(const kind of modern.vehicleClasses){
   capture('local/wreck_'+kind,()=>modern.wreck(collector,kind));
   capture('local/wheel_'+kind,()=>modern.roadwheel(collector,kind));
 }
-for(const turret of ['mbt_turret','apc_turret'])for(const team of ['red','blue'])capture('local/'+turret+'_'+team,()=>modern.factionVehicle(collector,turret,team));
+for(const turret of ['mbt_turret','apc_turret','mbt_barrel','apc_barrel'])for(const team of ['red','blue'])capture('local/'+turret+'_'+team,()=>modern.factionVehicle(collector,turret,team));
 for(let frame=0;frame<12;frame++)capture('local/belt_'+frame,()=>modern.trackBelt(collector,frame));
 for(const key of ['wood','metal','oil','fuel','powder','ammo'])capture('local/drop_'+key,()=>modern.pickup(collector,key));
 capture('local/refinery_hardware',()=>modern.refineryHardware(collector));

@@ -4,13 +4,13 @@ use serde_json::Value;
 fn get(o: &Value, k: &str) -> f32 {
     o[k].as_f64().unwrap_or(0.) as f32
 }
-pub fn draw(state: &Value, local: &Value, camera: Vec3) {
+pub fn draw(state: &Value, local: &Value, camera: Vec3, motion: &crate::motion::Motion) {
     let t = get_time() as f32;
     for v in state["drones"].as_array().into_iter().flatten() {
         if local["droneId"] == v["id"] {
             continue;
         }
-        let pos = vec3(get(v, "x"), get(v, "y"), get(v, "z"));
+        let pos = motion.drone(v).position;
         if pos.distance_squared(camera) > 180. * 180. {
             continue;
         }

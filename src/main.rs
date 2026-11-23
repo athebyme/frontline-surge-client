@@ -4,14 +4,17 @@ mod actors;
 mod chase;
 mod debug_ui;
 mod drone_view;
+mod motion;
+mod settings;
 mod sound;
 mod ui;
+mod vehicle_camera;
 mod world;
 
 use frontline_surge::net::{Client, Connecting};
 use macroquad::prelude::*;
 use serde_json::{json, Value};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use ui::{Action, Ui};
 
 fn window_conf() -> Conf {
@@ -102,12 +105,18 @@ struct Play {
     pitch: f32,
     body: Vec3,
     position_ready: bool,
+    vehicle_camera: vehicle_camera::VehicleCamera,
     drone_zoom: bool,
-    drone_eye: Option<Vec3>,
-    gimbal_roll: f32,
-    since_input: Instant,
+    motion: motion::Motion,
+    render_local: Value,
+    ads: f32,
+    next_input: Instant,
+    last_input: Instant,
+    ads_rate: f32,
+    pointer: motion::LookDelta,
     edges: Value,
     fire_tap: bool,
+    secondary_tap: bool,
     wait_trigger_release: bool,
     seq: u64,
 }
@@ -125,12 +134,18 @@ impl Play {
             pitch: 0.,
             body: Vec3::ZERO,
             position_ready: false,
+            vehicle_camera: Default::default(),
             drone_zoom: false,
-            drone_eye: None,
-            gimbal_roll: 0.,
-            since_input: Instant::now(),
+            motion: motion::Motion::default(),
+            render_local: Value::Null,
+            ads: 0.,
+            next_input: Instant::now(),
+            last_input: Instant::now(),
+            ads_rate: 13.,
+            pointer: Default::default(),
             edges: json!({}),
             fire_tap: false,
+            secondary_tap: false,
             wait_trigger_release: true,
             seq: 0,
         }
@@ -177,15 +192,16 @@ impl Play {
             self.pitch = num(player, "pitch");
             self.body = vec3(num(player, "x"), 0., num(player, "z"));
             self.position_ready = true;
+            self.ads = num(player, "aim");
             self.edges = json!({});
             self.fire_tap = false;
+            self.secondary_tap = false;
         }
         if self.local["droneId"] != player["droneId"]
             || self.local["vehicleId"] != player["vehicleId"]
         {
             self.drone_zoom = false;
-            self.drone_eye = None;
-            self.gimbal_roll = 0.;
+            self.ads = 0.;
             if player["droneId"].is_number() {
                 self.pitch = -0.46;
             } else if let Some(v) = new["vehicles"]
@@ -199,6 +215,25 @@ impl Play {
             }
             self.wait_trigger_release = true;
         }
+        if self.local["weapon"] != player["weapon"]
+            || self.local["optic"] != player["optic"]
+            || self.local["grip"] != player["grip"]
+        {
+            let mut kit = frontline_surge::arsenal::Arsenal::default();
+            let slot = match player["weapon"].as_str() {
+                Some("vx9") => 1,
+                Some("ar4") => 2,
+                _ => 0,
+            };
+            for part in ["optic", "grip"] {
+                if let Some(key) = player[part].as_str() {
+                    kit.fit(slot, part, key);
+                }
+            }
+            self.ads_rate = 13. * kit.equipped(slot).aim_speed();
+        }
+        self.motion.receive(&new);
+        self.render_local = player.clone();
         self.local = player.clone();
         self.state = new;
         if self.state["phase"] == "ended" && self.mode != "pause" {
@@ -210,6 +245,7 @@ impl Play {
             || (self.mode == "ended" && self.state["phase"] == "playing")
         {
             self.mode = "playing";
+            self.next_input = Instant::now();
             self.status.clear();
             self.wait_trigger_release = true;
             grab(true);
@@ -221,6 +257,7 @@ impl Play {
         grab(false);
         self.edges = json!({});
         self.fire_tap = false;
+        self.secondary_tap = false;
         if let Some(c) = self.client.as_mut() {
             self.seq += 1;
             let _ = c.input(json!({"seq":self.seq,"yaw":self.yaw,"pitch":self.pitch}));
@@ -232,24 +269,38 @@ impl Play {
             grab(false);
         } else {
             self.mode = "playing";
+            self.next_input = Instant::now();
             self.wait_trigger_release = true;
             grab(true);
         }
     }
-    fn look_and_send(&mut self, dt: f32, active: bool) -> Result<(), String> {
-        if self.mode == "playing" && active {
-            if !is_mouse_button_down(MouseButton::Left) && !is_key_down(KeyCode::Space) {
+    fn look_and_send(&mut self, dt: f32, active: bool, mouse_speed: f32) -> Result<(), String> {
+        let captured = (self.mode == "playing" && active).then(|| Vec2::from(mouse_position()));
+        let delta = self.pointer.sample(captured);
+        if captured.is_some() {
+            if !is_mouse_button_down(MouseButton::Left)
+                && !is_key_down(KeyCode::Space)
+                && (!self.local["vehicleId"].is_number()
+                    || !is_mouse_button_down(MouseButton::Right))
+            {
                 self.wait_trigger_release = false;
             }
-            let m = mouse_delta_position();
+            if self.local["vehicleId"].is_number()
+                && self.local["alive"] == true
+                && !self.local["droneId"].is_number()
+            {
+                if is_key_pressed(KeyCode::Y) {
+                    self.vehicle_camera.onboard = !self.vehicle_camera.onboard;
+                }
+                self.vehicle_camera.scroll(mouse_wheel().1);
+            }
             let sensitivity = if self.drone_zoom || is_mouse_button_down(MouseButton::Right) {
                 0.00135
             } else {
                 0.0022
-            };
-            self.yaw -= m.x * 0.5 * screen_width() * sensitivity;
-            self.pitch =
-                (self.pitch + m.y * 0.5 * screen_height() * sensitivity).clamp(-1.28, 1.28);
+            } * mouse_speed;
+            self.yaw += delta.x * sensitivity;
+            self.pitch = (self.pitch - delta.y * sensitivity).clamp(-1.28, 1.28);
             self.yaw += (is_key_down(KeyCode::Right) as i8 - is_key_down(KeyCode::Left) as i8)
                 as f32
                 * dt
@@ -284,6 +335,12 @@ impl Play {
                 }
             }
             if !self.wait_trigger_release
+                && self.local["vehicleId"].is_number()
+                && is_mouse_button_pressed(MouseButton::Right)
+            {
+                self.secondary_tap = true;
+            }
+            if !self.wait_trigger_release
                 && (is_mouse_button_pressed(MouseButton::Left) || is_key_pressed(KeyCode::Space))
             {
                 if self.local["droneId"].is_number() {
@@ -303,11 +360,23 @@ impl Play {
         if link.id.is_none() {
             return Ok(());
         }
-        let rate = if self.mode == "playing" { 0.032 } else { 0.6 };
-        if self.since_input.elapsed().as_secs_f32() < rate {
+        let period = Duration::from_millis(if self.mode == "playing" { 32 } else { 600 });
+        let now = Instant::now();
+        let trigger_edge = self.fire_tap
+            || self.secondary_tap
+            || (active && is_mouse_button_pressed(MouseButton::Right));
+        if now < self.next_input
+            && (!trigger_edge || now.duration_since(self.last_input) < Duration::from_millis(8))
+        {
             return Ok(());
         }
-        self.since_input = Instant::now();
+        // Send the trigger promptly, and carry the regular cadence across render frames.
+        self.next_input = if now < self.next_input || now - self.next_input >= period {
+            now + period
+        } else {
+            self.next_input + period
+        };
+        self.last_input = now;
         self.seq += 1;
         let mut v = std::mem::replace(&mut self.edges, json!({}));
         v["seq"] = json!(self.seq);
@@ -326,16 +395,44 @@ impl Play {
                         || is_mouse_button_down(MouseButton::Left)
                         || is_key_down(KeyCode::Space))
             );
-            v["aim"] = json!(is_mouse_button_down(MouseButton::Right));
-            v["secondary"] = json!(
-                self.local["vehicleId"].is_number() && is_mouse_button_down(MouseButton::Right)
-            );
+            let right_down = is_mouse_button_down(MouseButton::Right);
+            let seated = self.local["vehicleId"].is_number();
+            v["aim"] = json!(right_down && (!seated || !self.wait_trigger_release));
+            v["secondary"] =
+                json!(seated && !self.wait_trigger_release && (right_down || self.secondary_tap));
             v["sprint"] =
                 json!(is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift));
         }
         self.fire_tap = false;
+        self.secondary_tap = false;
         link.input(v)
             .map_err(|_| "Связь с сервером прервалась.".into())
+    }
+    fn update_presentation(&mut self, dt: f32, active: bool) {
+        if !self.local.is_object() {
+            return;
+        }
+        self.motion.local_gun_pitch = self.local["vehicleId"].as_u64().map(|id| (id, self.pitch));
+        let aim = active
+            && is_mouse_button_down(MouseButton::Right)
+            && self.local["alive"] == true
+            && self.local["buildMode"] != true
+            && self.local["vehicleId"].is_null()
+            && self.local["droneId"].is_null()
+            && num(&self.local, "reload") <= 0.;
+        let target = if aim { 1. } else { 0. };
+        self.ads += (target - self.ads) * (1. - (-self.ads_rate * dt).exp());
+        self.render_local["aim"] = json!(self.ads);
+        self.render_local["bob"] = json!(self.motion.player(&self.local).bob);
+        for (key, decay) in [
+            ("reload", 1.),
+            ("recoil", 6.),
+            ("hitFlash", 2.7),
+            ("hitConfirm", 3.8),
+        ] {
+            let value = (num(&self.local, key) - decay * self.motion.age).max(0.);
+            self.render_local[key] = json!(value);
+        }
     }
     fn camera(&mut self, dt: f32) -> Camera3D {
         let drone = self.state["drones"]
@@ -350,54 +447,48 @@ impl Play {
             .find(|v| v["id"] == self.local["vehicleId"]);
         let mut world_up = Vec3::Y;
         let (eye, look, fov) = if let Some(v) = drone {
-            let pos = vec3(num(v, "x"), num(v, "y"), num(v, "z"));
-            let eye = self
-                .drone_eye
-                .filter(|q| q.distance(pos) < 3.)
-                .map_or(pos, |q| q.lerp(pos, 1. - (-dt * 27.).exp()));
-            self.drone_eye = Some(eye);
+            let rendered = self.motion.drone(v);
+            let eye = rendered.position;
             let look = dir(self.yaw, self.pitch);
-            self.gimbal_roll += (num(v, "roll") - self.gimbal_roll) * (1. - (-dt * 10.).exp());
             world_up = Quat::from_axis_angle(
                 look,
-                self.gimbal_roll * if self.drone_zoom { 0.35 } else { 1. },
+                rendered.roll * if self.drone_zoom { 0.35 } else { 1. },
             ) * Vec3::Y;
             (eye, look, if self.drone_zoom { 43.4 } else { 77. })
         } else if let Some(v) = car {
-            let target = vec3(num(v, "x"), 0., num(v, "z"));
-            self.body = if self.body.distance(target) > 8. {
-                target
+            let pose = self.motion.vehicle(v);
+            self.body = pose.position;
+            if self.vehicle_camera.onboard {
+                vehicle_camera::onboard(
+                    v["kind"].as_str().unwrap_or(""),
+                    self.body,
+                    pose.yaw,
+                    pose.turret,
+                    self.yaw,
+                    self.pitch,
+                )
             } else {
-                self.body.lerp(target, 1. - (-dt * 23.).exp())
-            };
-            let height = match v["kind"].as_str() {
-                Some("scout_buggy") => 1.35,
-                Some("patrol4x4") => 1.75,
-                Some("apc") => 2.45,
-                _ => 2.9,
-            };
-            let focus = self.body + Vec3::Y * (height + 0.65);
-            let look = dir(self.yaw, self.pitch);
-            let distance = if height < 2. { 5.2 } else { 7.6 };
-            let desired = focus - look * distance + Vec3::Y * 1.35;
-            let eye = chase::clip(
-                focus,
-                desired.max(vec3(f32::NEG_INFINITY, 0.32, f32::NEG_INFINITY)),
-                &self.state,
-            );
-            (eye, (focus + look * 15. - eye).normalize_or_zero(), 75.)
+                let height = match v["kind"].as_str() {
+                    Some("scout_buggy") => 1.35,
+                    Some("patrol4x4") => 1.75,
+                    Some("apc") => 2.45,
+                    _ => 2.9,
+                };
+                let focus = self.body + Vec3::Y * (height + 0.65);
+                let look = dir(self.yaw, self.pitch);
+                let distance = self.vehicle_camera.chase_distance(height < 2., dt);
+                let desired = focus - look * distance + Vec3::Y * 1.35;
+                let eye = chase::clip(
+                    focus,
+                    desired.max(vec3(f32::NEG_INFINITY, 0.32, f32::NEG_INFINITY)),
+                    &self.state,
+                );
+                (eye, (focus + look * 15. - eye).normalize_or_zero(), 75.)
+            }
         } else if self.position_ready {
-            let goal = vec3(num(&self.local, "x"), 0., num(&self.local, "z"));
-            self.body = if self.body.distance(goal) > 2.5 {
-                goal
-            } else {
-                self.body.lerp(goal, 1. - (-dt * 26.).exp())
-            };
-            let bob = if self.local["moving"] == true {
-                (num(&self.local, "bob") * 2.).sin() * 0.024
-            } else {
-                0.
-            };
+            let pose = self.motion.player(&self.local);
+            self.body = pose.position;
+            let bob = (pose.bob * 2.).sin() * 0.024 * pose.stride;
             let height = if self.local["alive"] == false {
                 0.9
             } else {
@@ -405,9 +496,11 @@ impl Play {
             };
             (
                 self.body + Vec3::Y * height,
-                dir(self.yaw, self.pitch + num(&self.local, "recoil") * 0.008),
-                73. + (self.local["adsFov"].as_f64().unwrap_or(53.) as f32 - 73.)
-                    * num(&self.local, "aim"),
+                dir(
+                    self.yaw,
+                    self.pitch + num(&self.render_local, "recoil") * 0.008,
+                ),
+                73. + (self.local["adsFov"].as_f64().unwrap_or(53.) as f32 - 73.) * self.ads,
             )
         } else {
             let t = get_time() as f32;
@@ -433,17 +526,19 @@ impl Play {
 async fn main() {
     let font =
         load_ttf_font_from_bytes(include_bytes!("../assets/ui.ttf")).expect("Embedded UI font");
-    let mut field = world::World::new();
+    let mut screen = Ui::new();
+    let mut field = world::World::new(screen.settings.graphics);
     let mut people = actors::Actors::new();
     let mut audio = sound::Sound::new();
-    let mut screen = Ui::new();
     let mut play = Play::new();
     let mut fullscreen = false;
     let mut debug = debug_ui::DebugUi::new();
     let mut spectator: Option<debug_ui::FreeCamera> = None;
     let mut video = drone_view::Feed::new();
     loop {
-        let dt = get_frame_time().clamp(0.0, 0.1);
+        let frame_time = get_frame_time().max(0.);
+        let dt = frame_time.min(0.1);
+        play.motion.advance(frame_time);
         if let Err(e) = play.poll() {
             play.reset(e);
             people.clear();
@@ -513,10 +608,15 @@ async fn main() {
         if before_overlay != overlay && play.mode == "playing" {
             grab(!overlay);
             play.fire_tap = false;
+            play.secondary_tap = false;
             play.wait_trigger_release = true;
             play.edges = json!({});
         }
-        if let Err(e) = play.look_and_send(dt, !overlay && spectator.is_none()) {
+        if let Err(e) = play.look_and_send(
+            dt,
+            !overlay && spectator.is_none(),
+            screen.settings.sensitivity as f32 / 100.,
+        ) {
             play.reset(e);
             debug.open = false;
             spectator = None;
@@ -530,9 +630,17 @@ async fn main() {
             screen.set_fps_visible(!screen.fps_visible());
         }
         if is_key_pressed(KeyCode::F11) {
-            fullscreen = !fullscreen;
+            screen.settings.fullscreen = !screen.settings.fullscreen;
+            screen.save_preferences();
+        }
+        if fullscreen != screen.settings.fullscreen {
+            fullscreen = screen.settings.fullscreen;
             set_fullscreen(fullscreen);
         }
+        play.update_presentation(
+            dt,
+            play.mode == "playing" && !overlay && spectator.is_none(),
+        );
         let mut cam = if let Some(f) = spectator.as_mut() {
             f.camera(dt, !overlay)
         } else {
@@ -553,7 +661,8 @@ async fn main() {
             .local
             .get("preview")
             .filter(|p| p.is_object() && play.local["alive"] == true);
-        field.draw(snapshot, cam.position);
+        field.set_graphics(screen.settings.graphics);
+        field.draw(snapshot, cam.position, &play.motion);
         if snapshot.is_some() {
             people.set_daylight(field.daylight());
             if spectator.is_some() {
@@ -563,12 +672,12 @@ async fn main() {
                     < 0.57
                     && cam.position.y < 2.15;
                 local["freeCamera"] = json!(!inside_operator);
-                people.draw_world(&play.state, &local, dt);
+                people.draw_world(&play.state, &local, dt, &play.motion);
             } else {
-                people.draw_world(&play.state, &play.local, dt);
+                people.draw_world(&play.state, &play.render_local, dt, &play.motion);
             }
             drone_view::draw_pulses(&play.state);
-            drone_view::draw(&play.state, &play.local, cam.position);
+            drone_view::draw(&play.state, &play.local, cam.position, &play.motion);
             if let Some(p) = ghost {
                 field.draw_build_preview(p);
             }
@@ -581,7 +690,11 @@ async fn main() {
                 && !play.local["vehicleId"].is_number()
                 && !play.local["droneId"].is_number()
             {
-                people.draw_weapon(&play.local, screen_width() / screen_height().max(1.), dt);
+                people.draw_weapon(
+                    &play.render_local,
+                    screen_width() / screen_height().max(1.),
+                    dt,
+                );
             }
         }
         set_default_camera();
@@ -652,7 +765,7 @@ async fn main() {
             screen.draw(
                 play.mode,
                 &play.state,
-                &play.local,
+                &play.render_local,
                 &font,
                 &play.status,
                 &play.endpoint,
@@ -691,6 +804,7 @@ async fn main() {
             grab(!debug.open && !screen.modal_open());
             play.wait_trigger_release = true;
             play.fire_tap = false;
+            play.secondary_tap = false;
         }
         next_frame().await;
     }
